@@ -1,0 +1,11 @@
+rzpipe
+langchain
+langchain-openai
+langchain-deepseek
+pyyaml
+httpx
+pydantic
+python-dotenv
+fastapi
+uvicorn
+python-multipart

@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+build/
+dist/
+*.egg-info/
+
+# Configuration & Secrets
+.env
+config.yaml
+# If you want to keep a template, you can rename config.yaml to config.yaml.example 
+# and add config.yaml to gitignore.
+
+# Project Specific
+uploads/
+*.exe
+*.dll
+*.bin
+*.so
+*.sys
+
+# IDEs
+.vscode/
+.idea/
+
+# Logs
+*.log
