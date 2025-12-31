@@ -76,3 +76,9 @@ python agents/main.py
 ## ⚖ 法律免责声明
 
 本项目仅用于安全研究与教育目的。使用者需遵守当地法律法规，严禁用于任何非法用途。作者对因使用本项目导致的任何损失不承担责任。
+
+## 🔗 参考资料
+
+- [基于大模型的病毒木马文件云鉴定](https://mp.weixin.qq.com/s/G6LyMtzMxtwk5uAMo44euQ)
+- [二进制安全新风向：AI大语言模型协助未知威胁检测与逆向分析](https://www.huorong.cn/document/info/classroom/1887)
+
