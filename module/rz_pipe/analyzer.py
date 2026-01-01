@@ -39,15 +39,23 @@ class RizinAnalyzer:
         获取二进制文件中的.data段字符串 (JSON 格式)。
         """
         return self.rz.cmdj("izj") if self.rz else []
-
+    
+    def get_disassembly_code(self, address_or_name):
+        """
+        获取指定地址或函数名的反汇编代码。
+        """
+        if not self.rz:
+            return None
+        return self.rz.cmdj(f"pdfj @ {address_or_name}")
+    
     def get_decompiled_code(self, address_or_name):
         """
         获取指定地址或函数名的反编译代码 (需要安装 rz-ghidra 插件)。
         """
         if not self.rz:
             return None
-        # pdcj 是 rizin-ghidra 提供的反编译命令
-        return self.rz.cmdj(f"pdcj @ {address_or_name}")
+        # pdgj 是 rizin-ghidra 提供的反编译命令
+        return self.rz.cmdj(f"pdgj @ {address_or_name}")
 
     def get_info(self):
         """
