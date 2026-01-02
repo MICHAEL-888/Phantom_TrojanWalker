@@ -16,6 +16,7 @@ class RizinAnalyzer:
         try:
             # 添加 flags=['-2'] 来静默 stderr 输出
             self.rz = rzpipe.open(self.file_path, flags=['-2']) 
+            self.rz.cmd("e ghidra.verbose=false")  # 禁用 Ghidra 插件的冗长输出
             return True
         except Exception as e:
             print(f"Error opening binary with  rzpipe: {e}")
@@ -27,6 +28,9 @@ class RizinAnalyzer:
         """
         if self.rz:
             self.rz.cmd(level)
+            return {"status": "done"}
+        else:
+            return {"status": "error", "message": "Rizin not opened"}
 
     def get_functions(self):
         """
@@ -62,6 +66,12 @@ class RizinAnalyzer:
         获取二进制文件的基本信息。
         """
         return self.rz.cmdj("ij") if self.rz else {}
+    
+    def get_global_call_graph(self):
+        """
+        获取全局调用图 (JSON 格式)。
+        """
+        return self.rz.cmdj("agC json") if self.rz else {}
 
     def close(self):
         """

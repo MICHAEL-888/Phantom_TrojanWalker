@@ -9,6 +9,7 @@ plugins:
       decompile: "/decompile"
 
 FunctionAnalysisAgent:
+  system_prompt: ""
   system_prompt_path: "prompt/FunctionAnalysisAgent.md"
   llm:
     model_name: deepseek-reasoner
@@ -18,6 +19,7 @@ FunctionAnalysisAgent:
     max_retries: 3
 
 MalwareAnalysisAgent:
+  system_prompt: ""
   system_prompt_path: "prompt/MalwareAnalysisAgent.md"
   llm:
     model_name: deepseek-reasoner
