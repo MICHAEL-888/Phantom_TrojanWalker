@@ -1,18 +1,16 @@
 import json
+import asyncio
 from agent_core import FunctionAnalysisAgent
 from langchain.messages import HumanMessage
 from langchain_core.messages import BaseMessage
 
-if __name__ == "__main__":
+async def main():
     bot = FunctionAnalysisAgent()
-    content_text = """现在正在运行测试，请按照要求假装输出一份报告"""
-    user_message = HumanMessage(content=content_text)
-    response = bot.agent.invoke(user_message)
-    
-
+    content_text = """void test() { int a = 1; }"""
+    response = await bot.analyze(content_text)
     print("--- 分析报告 ---")
-    # 打印整个对话流
-    for m in response.get("messages", []):
-        if isinstance(m, BaseMessage):
-            m.pretty_print()
+    print(json.dumps(response, indent=2, ensure_ascii=False))
+
+if __name__ == "__main__":
+    asyncio.run(main())
   

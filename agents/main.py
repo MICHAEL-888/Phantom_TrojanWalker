@@ -1,14 +1,20 @@
 import os
 import httpx
 import uvicorn
+import asyncio
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from config_loader import load_config
+from agent_core import FunctionAnalysisAgent, MalwareAnalysisAgent
 from typing import List, Dict, Any
 
 app = FastAPI()
 config = load_config()
 RIZIN_BASE_URL = config.plugins["rizin"].base_url
 ENDPOINTS = config.plugins["rizin"].endpoints
+
+# 初始化 Agent
+function_agent = FunctionAnalysisAgent()
+malware_agent = MalwareAnalysisAgent()
 
 async def _check_health(client: httpx.AsyncClient):
     try:
@@ -140,12 +146,32 @@ async def analyze_endpoint(file: UploadFile = File(...)):
         # 8. 获取反编译代码
         decompiled_codes = await _get_decompiled_codes(client, raw_funcs)
 
+        # 9. 并行调用 FunctionAnalysisAgent 分析每个函数
+        async def analyze_func(item):
+            analysis = await function_agent.analyze(item["code"])
+            return {
+                "name": item["name"],
+                "analysis": analysis
+            }
+
+        tasks = [analyze_func(item) for item in decompiled_codes]
+        function_analysis_results = await asyncio.gather(*tasks)
+
+        # 10. 调用 MalwareAnalysisAgent 进行最终分析
+        final_malware_report = await malware_agent.analyze(
+            analysis_results=function_analysis_results,
+            metadata=metadata,
+            callgraph=callgraph_data
+        )
+
         return {
             "metadata": metadata,
             "functions": functions_data,
             "strings": strings_data,
             "callgraph": callgraph_data,
-            "decompiled_code": decompiled_codes
+            "decompiled_code": decompiled_codes,
+            "function_analyses": function_analysis_results,
+            "malware_report": final_malware_report
         }
 
 if __name__ == "__main__":

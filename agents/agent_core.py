@@ -8,36 +8,51 @@ from langchain.messages import AIMessage, SystemMessage, HumanMessage
 class FunctionAnalysisAgent:
     def __init__(self):
         self.config = load_config()
-        agent_config = self.config.FunctionAnalysisAgent
+        self.agent_config = self.config.FunctionAnalysisAgent
         self.llm = ChatDeepSeek(
-            model=agent_config.llm.model_name, 
-            api_key=agent_config.llm.api_key, 
-            max_retries=agent_config.llm.max_retries,
-            temperature=agent_config.llm.temperature,
+            model=self.agent_config.llm.model_name, 
+            api_key=self.agent_config.llm.api_key, 
+            max_retries=self.agent_config.llm.max_retries,
+            temperature=self.agent_config.llm.temperature,
             model_kwargs={"response_format": {"type": "json_object"}}
             )
 
-        # 使用简单的 ReAct 代理
-        self.agent = create_agent(
-            self.llm, 
-            system_prompt=agent_config.system_prompt
-            )
+    async def analyze(self, code: str) -> dict:
+        messages = [
+            SystemMessage(content=self.agent_config.system_prompt),
+            HumanMessage(content=f"{code}")
+        ]
+        response = await self.llm.ainvoke(messages)
+        try:
+            return json.loads(response.content)
+        except Exception:
+            return {"error": "Failed to parse JSON response", "raw": response.content}
 
 class MalwareAnalysisAgent:
     def __init__(self):
         self.config = load_config()
-        agent_config = self.config.MalwareAnalysisAgent
+        self.agent_config = self.config.MalwareAnalysisAgent
         self.llm = ChatDeepSeek(
-            model=agent_config.llm.model_name, 
-            api_key=agent_config.llm.api_key, 
-            max_retries=agent_config.llm.max_retries,
-            temperature=agent_config.llm.temperature,
+            model=self.agent_config.llm.model_name, 
+            api_key=self.agent_config.llm.api_key, 
+            max_retries=self.agent_config.llm.max_retries,
+            temperature=self.agent_config.llm.temperature,
             model_kwargs={"response_format": {"type": "json_object"}}
             )
 
-        # 使用简单的 ReAct 代理
-        self.agent = create_agent(
-            self.llm, 
-            system_prompt=agent_config.system_prompt
-            )
+    async def analyze(self, analysis_results: list, metadata: dict, callgraph: dict) -> dict:
+        context = {
+            "metadata": metadata,
+            "callgraph": callgraph,
+            "function_analyses": analysis_results
+        }
+        messages = [
+            SystemMessage(content=self.agent_config.system_prompt),
+            HumanMessage(content=f"{json.dumps(context, ensure_ascii=False, indent=2)}")
+        ]
+        response = await self.llm.ainvoke(messages)
+        try:
+            return json.loads(response.content)
+        except Exception:
+            return {"error": "Failed to parse JSON response", "raw": response.content}
 
