@@ -30,3 +30,12 @@ uploads/
 
 # Logs
 *.log
+
+# macOS
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Graphviz
+*.dot

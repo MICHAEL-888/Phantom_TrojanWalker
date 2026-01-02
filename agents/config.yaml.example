@@ -1,0 +1,22 @@
+llm:
+  model_name: deepseek-reasoner
+  temperature: 0
+  api_key: "YOUR_API_KEY_HERE"
+  base_url: "https://api.openai.com/v1"
+  max_retries: 3
+
+plugins:
+  rizin:
+    base_url: "http://localhost:8000"
+    endpoints:
+      upload: "/upload"
+      analyze: "/analyze"
+      functions: "/functions"
+      strings: "/strings"
+      decompile: "/decompile"
+
+FunctionAnalysisAgent:
+  system_prompt_path: "prompt/FunctionAnalysisAgent.md"
+
+MalwareAnalysisAgent:
+  system_prompt_path: "prompt/MalwareAnalysisAgent.md"
