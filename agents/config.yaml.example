@@ -1,10 +1,3 @@
-llm:
-  model_name: deepseek-reasoner
-  temperature: 0
-  api_key: "YOUR_API_KEY_HERE"
-  base_url: "https://api.openai.com/v1"
-  max_retries: 3
-
 plugins:
   rizin:
     base_url: "http://localhost:8000"
@@ -17,6 +10,18 @@ plugins:
 
 FunctionAnalysisAgent:
   system_prompt_path: "prompt/FunctionAnalysisAgent.md"
+  llm:
+    model_name: deepseek-reasoner
+    temperature: 0
+    api_key: "YOUR_API_KEY_HERE"
+    base_url: "https://api.deepseek.com/chat/completions"
+    max_retries: 3
 
 MalwareAnalysisAgent:
   system_prompt_path: "prompt/MalwareAnalysisAgent.md"
+  llm:
+    model_name: deepseek-reasoner
+    temperature: 0
+    api_key: "YOUR_API_KEY_HERE"
+    base_url: "https://api.deepseek.com/chat/completions"
+    max_retries: 3

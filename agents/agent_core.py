@@ -8,17 +8,36 @@ from langchain.messages import AIMessage, SystemMessage, HumanMessage
 class FunctionAnalysisAgent:
     def __init__(self):
         self.config = load_config()
+        agent_config = self.config.FunctionAnalysisAgent
         self.llm = ChatDeepSeek(
-            model=self.config.llm.model_name, 
-            api_key=self.config.llm.api_key, 
-            max_retries=self.config.llm.max_retries,
-            temperature=self.config.llm.temperature,
+            model=agent_config.llm.model_name, 
+            api_key=agent_config.llm.api_key, 
+            max_retries=agent_config.llm.max_retries,
+            temperature=agent_config.llm.temperature,
             model_kwargs={"response_format": {"type": "json_object"}}
             )
 
         # 使用简单的 ReAct 代理
         self.agent = create_agent(
             self.llm, 
-            system_prompt=self.config.FunctionAnalysisAgent.system_prompt
+            system_prompt=agent_config.system_prompt
+            )
+
+class MalwareAnalysisAgent:
+    def __init__(self):
+        self.config = load_config()
+        agent_config = self.config.MalwareAnalysisAgent
+        self.llm = ChatDeepSeek(
+            model=agent_config.llm.model_name, 
+            api_key=agent_config.llm.api_key, 
+            max_retries=agent_config.llm.max_retries,
+            temperature=agent_config.llm.temperature,
+            model_kwargs={"response_format": {"type": "json_object"}}
+            )
+
+        # 使用简单的 ReAct 代理
+        self.agent = create_agent(
+            self.llm, 
+            system_prompt=agent_config.system_prompt
             )
 
