@@ -1,81 +1,102 @@
-# Phantom TrojanWalker - AI 恶意软件分析框架
+# Phantom TrojanWalker - AI 恶意软件自动化分析框架
 
-Phantom TrojanWalker 是一个结合了 AI (LangChain + DeepSeek) 与二进制分析工具 (Rizin) 的自动化恶意软件分析框架。它通过 Rizin 提取二进制文件的结构化信息，并利用大语言模型的专家知识进行深度威胁评估。
+Phantom TrojanWalker 是一个高度模块化的二进制分析与威胁检测平台。它创新性地结合了 **Rizin** 的底层逆向能力、**LangChain** 的 AI 编排能力以及 **DeepSeek** 的大规模语言模型专家知识，旨在为安全研究员提供全自动化的恶意代码审计与风险评估。
 
-## 🚀 核心特性
+## 🚀 核心能力
 
-- **AI 驱动分析**：集成 LangChain 和 DeepSeek，利用预设的专家提示词（Prompts）识别恶意行为（如进程注入、持久化、C2 通信等）。
-- **二进制深度检查**：基于 `rizin` 和 `rz-ghidra` 插件，提供函数列表、字符串提取、反汇编及反编译代码分析。
-- **模块化架构**：
-  - **后端 (Rizin Backend)**：基于 FastAPI 的 REST API，封装了 Rizin 的分析能力。
-  - **智能体 (AI Agent)**：基于 ReAct 模式的 AI 代理，自动调用后端工具获取数据并生成报告。
-- **结构化报告**：自动生成 JSON 格式的分析报告，包含恶意评分、证据链及详细描述。
+- **🤖 AI 协同分析**: 集成 LangChain ReAct 模式，由 AI 智能体自主调用 Rizin 引擎获取函数、字符串、调用图等关键信息。
+- **🔍 深度逆向解析**: 基于 `rizin` 和 `rz-ghidra` 插件，支持多架构反编译、符号恢复及全局调用图提取。
+- **📊 任务化管理 (v2.0)**: 提供基于任务队列的异步分析模式，支持历史任务查询、SHA256 去重及状态追踪。
+- **💻 现代化看板**: 基于 React + TailwindCSS + Lucide 构建的实时分析控制台，直观展示恶意评分与证据链。
 
-## 🏗 项目架构
+## 🏗 系统架构
 
 ```mermaid
 graph TD
-    A[Target Binary] --> B[Rizin Backend FastAPI]
-    B --> C[RizinAnalyzer rz-pipe]
-    C --> D[Ghidra Decompiler]
-    E[AI Agent LangChain] -->|HTTP Requests| B
-    E -->|Expert Prompts| F[DeepSeek LLM]
-    F --> G[JSON Analysis Report]
+    User((用户/前端)) -->|上传文件/查询| API[FastAPI Backend :8001]
+    API -->|写入| DB[(SQLite/TaskDB)]
+    API -->|下发任务| Worker[Async Worker]
+    
+    subgraph AI_Core [AI 分析核心]
+        Worker -->|调度| Coord[Analysis Coordinator]
+        Coord -->|提示词工程| LLM[DeepSeek-Reasoner]
+        Coord -->|指令交互| RzClient[Rizin Client]
+    end
+
+    subgraph Binary_Engine [底层分析引擎]
+        RzClient -->|HTTP/JSON| RzAPI[Rizin Backend :8000]
+        RzAPI -->|rizin/rz-pipe| RzPipe[Rizin Core]
+        RzPipe -->|Plugin| Ghidra[rz-ghidra Decompiler]
+    end
+
+    LLM -.->|生成报告| Worker
+    Worker -->|更新状态| DB
 ```
 
-## 🛠 环境要求
+## 🛠️ 环境准备
 
-- **Python 3.10+**
-- **Rizin**: 必须安装 [Rizin](https://rizin.re/) 及其 [rz-ghidra](https://github.com/rizinorg/rz-ghidra) 插件。
-- **DeepSeek API Key**: 用于驱动 AI 智能体。
+### 1. 基础环境
+- **Python**: 3.10+
+- **Node.js**: 18+ (用于前端构建)
+- **Rizin**: 必须安装 [Rizin 核心](https://rizin.re/) 及其 [rz-ghidra](https://github.com/rizinorg/rz-ghidra) 插件。
 
-## 📦 安装步骤
+### 2. 依赖安装
+```bash
+# 安装 Python 依赖
+pip install -r requirements.txt
 
-1. **克隆仓库**：
-   ```bash
-   git clone https://github.com/your-repo/Phantom_TrojanWalker.git
-   cd Phantom_TrojanWalker
-   ```
+# 安装前端依赖
+cd frontend
+npm install
+```
 
-2. **创建虚拟环境并安装依赖**：
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate  # Windows: .venv\Scripts\activate
-   pip install -r requirements.txt
-   ```
+### 3. 配置信息
+在 `agents/config.yaml` 中配置 LLM API 密钥及后端通信地址：
+```yaml
+llm:
+  api_key: "your-deepseek-api-key"
+  model: "deepseek-reasoner"
+rizin:
+  base_url: "http://127.0.0.1:8000"
+```
 
-3. **配置环境变量**：
-   在 `agents/config.yaml` 中配置你的 API Key 和后端地址，或者根据项目需要设置 `.env` 文件。
+## 🚦 快速启动
 
-## 🚦 使用指南
+若要运行完整框架，请按顺序启动以下三个服务：
 
-### 1. 启动 Rizin 后端服务
-后端服务负责解析二进制文件并提供 API 接口。
+### Step 1: 启动 Rizin 底层引擎
 ```bash
 python module/rz_pipe/main.py
+# 默认监听: http://127.0.0.1:8000
 ```
-默认运行在 `http://127.0.0.1:8000`。
 
-### 2. 运行 AI 分析智能体
-在另一个终端中运行主程序开始分析：
+### Step 2: 启动 分析后台 (Task Logic)
 ```bash
-python agents/main.py
+python run_backend.py
+# 默认监听: http://127.0.0.1:8001
 ```
 
-## 📂 项目结构
+### Step 3: 启动 前端看板
+```bash
+cd frontend
+npm run dev
+# 默认访问: http://localhost:5173
+```
 
-- `agents/`: AI 智能体核心逻辑。
-  - `agent_core.py`: 定义 LangChain 代理及工具调用。
-  - `config.yaml`: 配置文件（LLM 模型、API 密钥、插件地址）。
-  - `prompt/`: 存放专家分析提示词模板。
-- `module/rz_pipe/`: 二进制分析后端。
-  - `analyzer.py`: 封装 `rzpipe` 的核心分析类。
-  - `main.py`: FastAPI 服务入口。
-- `requirements.txt`: 项目依赖列表。
+## 📂 目录结构
 
-## ⚖ 法律免责声明
+```text
+├── agents/             # AI 智能体核心 (Coordinator, Tools, Prompts)
+├── backend/            # 业务持久化后端 (FastAPI, SQLite, Worker)
+├── frontend/           # React 前端看板
+├── module/rz_pipe/     # Rizin API 封装层 (底层引擎)
+├── data/               # 文件上传及任务数据存储
+└── run_backend.py      # 后端主入口
+```
 
-本项目仅用于安全研究与教育目的。使用者需遵守当地法律法规，严禁用于任何非法用途。作者对因使用本项目导致的任何损失不承担责任。
+## ⚖️ 法律声明
+
+本项目仅供安全研究与教学使用。用户在使用本工具进行法律允许范围外的操作时，由此产生的法律后果由使用者本人承担。
 
 ## 🔗 参考资料
 
