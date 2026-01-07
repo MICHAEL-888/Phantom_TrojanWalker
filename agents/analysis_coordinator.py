@@ -62,23 +62,21 @@ class AnalysisCoordinator:
         # 8. Decompile (Batch)
         logger.info(f"Step 8: Decompiling functions (Batch mode)...")
         
-        # 提取所有函数地址
-        func_addresses = [str(f["offset"]) for f in functions_data if f.get("offset") is not None]
+        # 提取所有函数名称
+        func_names = [f["name"] for f in functions_data if f.get("name")]
         
-        # 调用批量反编译接口
-        decompiled_codes_raw = await self.rizin.get_decompiled_codes_batch(func_addresses)
+        # 调用批量反编译接口 (后端支持通过名称或地址反编译)
+        decompiled_codes_raw = await self.rizin.get_decompiled_codes_batch(func_names)
         
-        # 建立地址到函数名的映射，用于组装结果
-        addr_to_name = {str(f["offset"]): f.get("name", "unknown") for f in functions_data}
-        
+        # 将原始结果直接映射到最终结果
         decompiled_codes = []
+        # 后端返回格式为 [{"address": "name_or_addr", "code": "..."}]
         for item in decompiled_codes_raw:
-            # item 结构: {"address": "...", "code": "..."}
-            addr = str(item.get("address"))
+            name = item.get("address") # 在这里 address 字段将包含我们发送的名称
             code = item.get("code")
-            if code and addr in addr_to_name:
+            if code and name:
                 decompiled_codes.append({
-                    "name": addr_to_name[addr],
+                    "name": name,
                     "code": code
                 })
 
@@ -86,8 +84,8 @@ class AnalysisCoordinator:
         logger.info(f"Step 9: Analyzing {len(decompiled_codes)} decompiled functions...")
         
         async def analyze_func(item):
-            # 限制发送给 LLM 的代码长度
-            MAX_CHAR_LIMIT = 100000
+            # 获取配置中的输入限制 (max_input_tokens)
+            MAX_CHAR_LIMIT = self.func_agent.agent_config.llm.max_input_tokens - 10000
             code = item["code"]
             if len(code) > MAX_CHAR_LIMIT:
                 code = code[:MAX_CHAR_LIMIT] + "\n... [Code truncated for AI analysis due to context limits] ..."
@@ -119,8 +117,7 @@ class AnalysisCoordinator:
         logger.info("Step 10: Generating final malware analysis report...")
         final_malware_report = await self.malware_agent.analyze(
             analysis_results=function_analysis_results,
-            metadata=metadata,
-            callgraph=callgraph_data
+            metadata=metadata
         )
 
         logger.info(f"Analysis complete for file: {filename}")
@@ -128,7 +125,6 @@ class AnalysisCoordinator:
             "metadata": metadata,
             "functions": functions_data,
             "strings": strings_data,
-            "callgraph": callgraph_data,
             "decompiled_code": decompiled_codes,
             "function_analyses": function_analysis_results,
             "malware_report": final_malware_report

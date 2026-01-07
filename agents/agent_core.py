@@ -10,11 +10,14 @@ class FunctionAnalysisAgent:
     def __init__(self):
         self.config = load_config()
         self.agent_config = self.config.FunctionAnalysisAgent
-        self.llm = ChatDeepSeek(
+        self.llm = ChatOpenAI(
+            name="FunctionAnalysisAgent",
+            base_url=self.agent_config.llm.base_url,
             model=self.agent_config.llm.model_name, 
             api_key=self.agent_config.llm.api_key, 
             max_retries=self.agent_config.llm.max_retries,
-            temperature=self.agent_config.llm.temperature,
+            timeout=self.agent_config.llm.timeout,
+            max_completion_tokens=self.agent_config.llm.max_completion_tokens,
             model_kwargs={"response_format": {"type": "json_object"}}
             )
 
@@ -33,18 +36,20 @@ class MalwareAnalysisAgent:
     def __init__(self):
         self.config = load_config()
         self.agent_config = self.config.MalwareAnalysisAgent
-        self.llm = ChatDeepSeek(
+        self.llm = ChatOpenAI(
+            name="MalwareAnalysisAgent",
+            base_url=self.agent_config.llm.base_url,
             model=self.agent_config.llm.model_name, 
             api_key=self.agent_config.llm.api_key, 
             max_retries=self.agent_config.llm.max_retries,
-            temperature=self.agent_config.llm.temperature,
+            timeout=self.agent_config.llm.timeout,
+            max_completion_tokens=self.agent_config.llm.max_completion_tokens,
             model_kwargs={"response_format": {"type": "json_object"}}
             )
 
-    async def analyze(self, analysis_results: list, metadata: dict, callgraph: dict) -> dict:
+    async def analyze(self, analysis_results: list, metadata: dict) -> dict:
         context = {
             "metadata": metadata,
-            "callgraph": callgraph,
             "function_analyses": analysis_results
         }
         messages = [

@@ -5,10 +5,13 @@ from typing import Dict, Optional
 
 class LLMConfig(BaseModel):
     model_name: str
-    temperature: float
     api_key: str
+    temperature: Optional[float] = None
     base_url: Optional[str] = None
     max_retries: Optional[int] = None
+    timeout: Optional[float] = None
+    max_completion_tokens: Optional[int] = None
+    max_input_tokens: Optional[int] = None
 
 class PluginConfig(BaseModel):
     base_url: str
