@@ -1,34 +1,36 @@
-# Phantom TrojanWalker - AI Malware Analysis Framework
+# Phantom TrojanWalker - AI 恶意软件分析框架指南
 
-This project is an AI-powered malware analysis framework that combines LangChain (DeepSeek) with Rizin (`rz-pipe`) for deep binary inspection.
+Phantom TrojanWalker 是一个结合了 LangChain (DeepSeek) 与 Rizin (`rz-pipe`) 的自动化恶意软件分析框架。
 
-## 🏗 Architecture Overview
-- **Rizin Backend**: [module/rz_pipe/main.py](module/rz_pipe/main.py) (FastAPI, port 8000) wraps `RizinAnalyzer` ([module/rz_pipe/analyzer.py](module/rz_pipe/analyzer.py)) to provide structured binary data (metadata, functions, strings, decompilation).
-- **Orchestration Service**: [agents/main.py](agents/main.py) (FastAPI, port 8001) manages the full analysis pipeline, coordinating between the Rizin backend and AI agents.
-- **AI Agent Core**: [agents/agent_core.py](agents/agent_core.py) uses `langchain-deepseek` to implement `FunctionAnalysisAgent` (per-function code audit) and `MalwareAnalysisAgent` (final report generation).
-- **Configuration**: Managed by [agents/config_loader.py](agents/config_loader.py) using Pydantic, loading from [agents/config.yaml](agents/config.yaml).
+## 🏗 核心架构
+- **Rizin 后端** ([module/rz_pipe/main.py](module/rz_pipe/main.py)): 基于 FastAPI (Port 8000) 封装 `RizinAnalyzer` ([module/rz_pipe/analyzer.py](module/rz_pipe/analyzer.py))，通过 `rzpipe` 提供二进制分析能力。
+- **业务中控** ([agents/main.py](agents/main.py)): 基于 FastAPI (Port 8001) 的编排层，管理分析流水线。
+- **AI 智能体层**: 
+    - `FunctionAnalysisAgent`: 针对单个函数代码进行审计。
+    - `MalwareAnalysisAgent`: 综合所有发现生成最终报告。
+- **配置管理**: 使用 Pydantic 模型在 [agents/config_loader.py](agents/config_loader.py) 中定义，从 [agents/config.yaml](agents/config.yaml) 加载。
 
-## 🔄 Data Flow
-1. **Target Binary** is uploaded to Port 8001 ([agents/main.py](agents/main.py)).
-2. **Orchestration Service** uploads to Backend (Port 8000) and triggers `aaa` analysis.
-3. **Data Retrieval**: Metadata, functions, callgraphs, and decompiled code are fetched via REST API from the Backend.
-4. **AI Analysis**: 
-    - `FunctionAnalysisAgent` audits each `fcn.*` function using rules in [agents/prompt/FunctionAnalysisAgent.md](agents/prompt/FunctionAnalysisAgent.md).
-    - `MalwareAnalysisAgent` synthesizes all findings into a final JSON report based on [agents/prompt/MalwareAnalysisAgent.md](agents/prompt/MalwareAnalysisAgent.md).
+## 🔄 开发工作流
+- **启动后端**: `python module/rz_pipe/main.py` (需安装 `rizin` 和 `rz-ghidra`)
+- **启动中控**: `python agents/main.py` (需配置 API Key)
+- **分析测试**: 使用 POST 请求上传二进制文件至 `http://localhost:8001/analyze`
+- **提示词迭代**: 直接修改 [agents/prompt/](agents/prompt/) 下的 Markdown 文件，中控会自动加载最新内容。
 
-## 🛠 Critical Workflows
-- **Start Rizin Backend**: `python module/rz_pipe/main.py`
-- **Start Orchestration Service**: `python agents/main.py`
-- **Testing**: Use `python agents/main.py` and send a POST request with a file to `http://localhost:8001/analyze`.
-- **System Prompts**: Update expert knowledge by editing Markdown files in [agents/prompt/](agents/prompt/).
+## 📏 项目开发规范
+- **Rizin 交互**: 
+    - 绝不直接运行 shell 命令，始终使用 `RizinAnalyzer` 实例。
+    - 优先使用 `cmdj` 获取 JSON 格式结果（如 `aflj`, `ij`, `pdgj`）。
+    - 反编译必须使用 `pdgj @ <addr>` 以支持 Ghidra 插件。
+- **AI 交互**:
+    - AI Agent 必须配置 `response_format: {"type": "json_object"}` 确保输出为 JSON。
+    - 返回结果需经过 `json.loads` 校验，格式错误时抛出 `LLMResponseError`。
+- **异步处理**: 
+    - 采用 FastAPI 异步架构，IO 操作（HTTP 请求、LLM 调用）必须使用 `async/await`。
+    - 跨服务通信使用 `httpx.AsyncClient`。
+- **异常处理**:
+    - 使用 [agents/exceptions.py](agents/exceptions.py) 中定义的自定义异常（如 `RizinBackendError`, `AgentError`）。
 
-## 📏 Project Conventions
-- **Malware Analysis Logic**: Strictly follow detection criteria (Injection, Persistence, C2, Shellcode) defined in [FunctionAnalysisAgent.md](agents/prompt/FunctionAnalysisAgent.md#L45).
-- **Service Interaction**: Services communicate via HTTP using endpoints defined in [agents/config.yaml](agents/config.yaml).
-- **Binary Analysis**: Always use `RizinAnalyzer` ([module/rz_pipe/analyzer.py](module/rz_pipe/analyzer.py)) for interacting with `rzpipe`. Prefer `cmdj` for JSON results.
-- **Async Execution**: Both services are built on FastAPI/Asyncio. Use `httpx.AsyncClient` for cross-service requests.
+## 🔌 核心集成点
+- **二进制指令**: `aaa` (深度分析), `aflj` (函数列表), `izj` (字符串), `pdgj` (反编译代码), `agC json` (调用图)。
+- **LLM 引擎**: 兼容 OpenAI 格式的 API（默认为 DeepSeek-Reasoner）。
 
-## 🔌 Integration Points
-- **Rizin**: Requires `rizin` and `rz-ghidra` (for `pdgj` command) installed on the system.
-- **LLM**: Primary engine is `deepseek-chat` via `langchain-deepseek`.
-- **API Response**: AI agents must return valid JSON (configured via `response_format: {"type": "json_object"}`).

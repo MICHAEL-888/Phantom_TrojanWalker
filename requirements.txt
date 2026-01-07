@@ -8,4 +8,5 @@ pydantic
 python-dotenv
 fastapi
 uvicorn
-python-multipart
+python-multipartsqlalchemy
+aiofiles

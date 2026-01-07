@@ -17,7 +17,10 @@ class AnalysisCoordinator:
         self.malware_agent = malware_agent
 
     async def analyze_file(self, file: UploadFile) -> Dict[str, Any]:
-        filename = file.filename
+        content = await file.read()
+        return await self.analyze_content(file.filename, content, file.content_type)
+
+    async def analyze_content(self, filename: str, content: bytes, content_type: str = "application/octet-stream") -> Dict[str, Any]:
         logger.info(f"Start analyzing file: {filename}")
         
         # 1. Check Health
@@ -26,8 +29,7 @@ class AnalysisCoordinator:
 
         # 2. Upload
         logger.info(f"Step 2: Uploading file '{filename}' to backend...")
-        content = await file.read()
-        await self.rizin.upload_file(filename, content, file.content_type)
+        await self.rizin.upload_file(filename, content, content_type)
 
         # 3. Trigger Analysis
         logger.info("Step 3: Triggering Rizin deep analysis (aaa)...")
