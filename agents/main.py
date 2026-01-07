@@ -6,6 +6,9 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from config_loader import load_config
 from agent_core import FunctionAnalysisAgent, MalwareAnalysisAgent
 from typing import List, Dict, Any
+from dotenv import load_dotenv
+
+load_dotenv()  # 自动读取 .env 文件并加载到环境变量
 
 app = FastAPI()
 config = load_config()
@@ -131,6 +134,7 @@ async def analyze_endpoint(file: UploadFile = File(...)):
         functions_data = [
             {
                 "name": f.get("name"),
+                "offset": f.get("offset"),
                 "size": f.get("size"),
                 "signature": f.get("signature")
             }
@@ -144,17 +148,23 @@ async def analyze_endpoint(file: UploadFile = File(...)):
         callgraph_data = await _get_callgraph(client)
 
         # 8. 获取反编译代码
-        decompiled_codes = await _get_decompiled_codes(client, raw_funcs)
+        decompiled_codes = await _get_decompiled_codes(client, functions_data)
 
         # 9. 并行调用 FunctionAnalysisAgent 分析每个函数
         async def analyze_func(item):
-            analysis = await function_agent.analyze(item["code"])
+            # 限制发送给 LLM 的代码长度，防止超长函数导致上下文溢出 (约 100k 字符)
+            MAX_CHAR_LIMIT = 100000
+            code = item["code"]
+            if len(code) > MAX_CHAR_LIMIT:
+                code = code[:MAX_CHAR_LIMIT] + "\n... [Code truncated for AI analysis due to context limits] ..."
+            
+            analysis = await function_agent.analyze(code)
             return {
                 "name": item["name"],
                 "analysis": analysis
             }
 
-        tasks = [analyze_func(item) for item in decompiled_codes]
+        tasks = [analyze_func(item) for item in decompiled_codes if item["name"].startswith("fcn.")]
         function_analysis_results = await asyncio.gather(*tasks)
 
         # 10. 调用 MalwareAnalysisAgent 进行最终分析

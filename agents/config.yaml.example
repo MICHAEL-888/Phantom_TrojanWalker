@@ -2,10 +2,13 @@ plugins:
   rizin:
     base_url: "http://localhost:8000"
     endpoints:
+      health_check: "/health_check"
       upload: "/upload"
       analyze: "/analyze"
+      metadata: "/metadata"
       functions: "/functions"
       strings: "/strings"
+      callgraph: "/callgraph"
       decompile: "/decompile"
 
 FunctionAnalysisAgent:
