@@ -39,3 +39,10 @@ Desktop.ini
 
 # Graphviz
 *.dot
+
+# Node.js
+node_modules/
+dist/
+.npm
+
+data/

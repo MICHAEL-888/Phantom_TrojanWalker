@@ -59,7 +59,15 @@ class AnalysisWorker:
             try:
                 result = await self.coordinator.analyze_content(task.filename, content)
                 task.status = "completed"
-                task.result = result
+                
+                # Unpack result into columns
+                task.metadata_info = result.get("metadata")
+                task.functions = result.get("functions")
+                task.strings = result.get("strings")
+                task.decompiled_code = result.get("decompiled_code")
+                task.function_analyses = result.get("function_analyses")
+                task.malware_report = result.get("malware_report")
+
                 task.finished_at = datetime.now()
             except Exception as e:
                 logger.error(f"Analysis failed: {traceback.format_exc()}")

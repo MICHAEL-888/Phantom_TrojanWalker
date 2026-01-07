@@ -73,7 +73,12 @@ def get_task_status(task_id: str, db: Session = Depends(get_db)):
         "task_id": task.task_id,
         "status": task.status,
         "filename": task.filename,
-        "result": task.result,
+        "metadata": task.metadata_info,
+        "functions": task.functions,
+        "strings": task.strings,
+        "decompiled_code": task.decompiled_code,
+        "function_analyses": task.function_analyses,
+        "malware_report": task.malware_report,
         "error": task.error_message,
         "created_at": task.created_at,
         "finished_at": task.finished_at
@@ -88,7 +93,12 @@ def get_result_by_hash(sha256: str, db: Session = Depends(get_db)):
     return {
         "task_id": task.task_id,
         "status": task.status,
-        "result": task.result
+        "metadata": task.metadata_info,
+        "functions": task.functions,
+        "strings": task.strings,
+        "decompiled_code": task.decompiled_code,
+        "function_analyses": task.function_analyses,
+        "malware_report": task.malware_report
     }
 
 @router.get("/history")

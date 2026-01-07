@@ -1,36 +1,39 @@
 # Phantom TrojanWalker - AI 恶意软件分析框架指南
 
-Phantom TrojanWalker 是一个结合了 LangChain (DeepSeek) 与 Rizin (`rz-pipe`) 的自动化恶意软件分析框架。
+Phantom TrojanWalker 是一个高度模块化的二进制分析平台，结合了 Rizin (`rz-pipe`) 的底层分析能力、LangChain 的 AI 网络编排以及 FastAPI/React 的现代全栈架构。
 
-## 🏗 核心架构
-- **Rizin 后端** ([module/rz_pipe/main.py](module/rz_pipe/main.py)): 基于 FastAPI (Port 8000) 封装 `RizinAnalyzer` ([module/rz_pipe/analyzer.py](module/rz_pipe/analyzer.py))，通过 `rzpipe` 提供二进制分析能力。
-- **业务中控** ([agents/main.py](agents/main.py)): 基于 FastAPI (Port 8001) 的编排层，管理分析流水线。
-- **AI 智能体层**: 
-    - `FunctionAnalysisAgent`: 针对单个函数代码进行审计。
-    - `MalwareAnalysisAgent`: 综合所有发现生成最终报告。
-- **配置管理**: 使用 Pydantic 模型在 [agents/config_loader.py](agents/config_loader.py) 中定义，从 [agents/config.yaml](agents/config.yaml) 加载。
+## 🏗 全栈架构
+- **Rizin 模块** ([module/rz_pipe/](module/rz_pipe/)): 二进制分析引擎，封装 `rzpipe` 和 `Ghidra` 插件。
+- **AI 智能体层** ([agents/](agents/)): 核心逻辑层，包含 `FunctionAnalysisAgent` (代码审计) 和 `MalwareAnalysisAgent` (综合评估)。
+- **持久化后端** ([backend/](backend/)): v2.0 任务引擎，提供 SQLite 存储和异步分析队列（Worker 模式）。
+- **前端页面** ([frontend/](frontend/)): React + Tailwind + Lucide 组件库构建的分析看板。
 
-## 🔄 开发工作流
-- **启动后端**: `python module/rz_pipe/main.py` (需安装 `rizin` 和 `rz-ghidra`)
-- **启动中控**: `python agents/main.py` (需配置 API Key)
-- **分析测试**: 使用 POST 请求上传二进制文件至 `http://localhost:8001/analyze`
-- **提示词迭代**: 直接修改 [agents/prompt/](agents/prompt/) 下的 Markdown 文件，中控会自动加载最新内容。
+## 🔄 核心开发流水线
+1. **启动 Rizin 引擎**: `python module/rz_pipe/main.py` (默认端口 8000)。
+2. **启动分析后台**: `python backend/main.py` (默认端口 8001)。
+3. **启动前端**: `cd frontend; npm run dev` (Vite 默认端口 5173)。
+4. **添加新能力**: 在 `RizinAnalyzer` ([module/rz_pipe/analyzer.py](module/rz_pipe/analyzer.py)) 中新增底层方法 -> 在 `agents/agent_core.py` 中封装为 Tool -> 在 `agents/analysis_coordinator.py` 中编排。
 
-## 📏 项目开发规范
-- **Rizin 交互**: 
-    - 绝不直接运行 shell 命令，始终使用 `RizinAnalyzer` 实例。
-    - 优先使用 `cmdj` 获取 JSON 格式结果（如 `aflj`, `ij`, `pdgj`）。
-    - 反编译必须使用 `pdgj @ <addr>` 以支持 Ghidra 插件。
-- **AI 交互**:
-    - AI Agent 必须配置 `response_format: {"type": "json_object"}` 确保输出为 JSON。
-    - 返回结果需经过 `json.loads` 校验，格式错误时抛出 `LLMResponseError`。
-- **异步处理**: 
-    - 采用 FastAPI 异步架构，IO 操作（HTTP 请求、LLM 调用）必须使用 `async/await`。
-    - 跨服务通信使用 `httpx.AsyncClient`。
-- **异常处理**:
-    - 使用 [agents/exceptions.py](agents/exceptions.py) 中定义的自定义异常（如 `RizinBackendError`, `AgentError`）。
+## 📏 二进制与 AI 开发规范
+- **Rizin 交互**:
+    - **禁止执行原生 Shell**: 必须通过 `RizinAnalyzer` 实例调用 `cmd` 或 `cmdj`。
+    - **优先 JSON**: 使用 `cmdj` 获取结构化数据（如 `aflj`, `izj`, `ij`）。
+    - **反编译标准**: 调用 `pdgj @ <addr>` 必须确保 `rz-ghidra` 插件已加载。
+- **AI Agent 开发**:
+    - **强制 JSON 响应**: 模型必须配置 `response_format: {"type": "json_object"}`。
+    - **Prompts**: 位于 [agents/prompt/](agents/prompt/)，修改后无需重启，后台会自动重载 Markdown 内容。
+- **数据流与异步**:
+    - **后端通信**: 使用 `httpx.AsyncClient` 进行跨服务调用。
+    - **任务持久化**: 始终通过 `backend/models/task.py` 中的 `AnalysisTask` 模型记录状态，不要在内存中存储大批量任务。
 
-## 🔌 核心集成点
-- **二进制指令**: `aaa` (深度分析), `aflj` (函数列表), `izj` (字符串), `pdgj` (反编译代码), `agC json` (调用图)。
-- **LLM 引擎**: 兼容 OpenAI 格式的 API（默认为 DeepSeek-Reasoner）。
+## 🔌 技术栈集成
+- **Binary**: `rzpipe`, `rz-ghidra`.
+- **LLM**: `langchain-deepseek` (DeepSeek-Reasoner).
+- **Backend**: FastAPI, SQLAlchemy (SQLite), aiofiles.
+- **Frontend**: Vite, React, TailwindCSS, Axios.
+
+## ⚠️ 异常等级
+- `RizinBackendError`: 引擎层错误（如文件加载失败、插件缺失）。
+- `LLMResponseError`: 模型幻觉或格式错误。
+- `TrojanWalkerError`: 业务逻辑异常，统一在 `agents/exceptions.py` 定义。
 

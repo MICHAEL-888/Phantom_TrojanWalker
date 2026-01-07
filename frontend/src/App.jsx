@@ -51,7 +51,7 @@ function App() {
       const res = await axios.get(`${API_BASE}/tasks/${tid}`);
       setStatus(res.data.status);
       if (res.data.status === "completed") {
-        setReport(res.data.result);
+        setReport(res.data);
       } else if (res.data.status === "failed") {
         setError(res.data.error || "Analysis failed.");
       }
@@ -68,7 +68,7 @@ function App() {
       setTaskId(res.data.task_id);
       setStatus(res.data.status);
       if (res.data.status === "completed") {
-        setReport(res.data.result);
+        setReport(res.data);
       }
     } catch (err) {
       setError("Analysis not found for this hash.");
