@@ -61,6 +61,24 @@ class RizinAnalyzer:
         # pdgj 是 rizin-ghidra 提供的反编译命令
         return self.rz.cmdj(f"pdgj @ {address_or_name}")
 
+    def get_decompiled_code_batch(self, addresses):
+        """
+        批量获取指定地址列表的反编译代码 (需安装 rz-ghidra 插件)。
+        """
+        if not self.rz:
+            return []
+        
+        results = []
+        for addr in addresses:
+            try:
+                # pdgj 是 rizin-ghidra 提供的反编译命令
+                res = self.rz.cmdj(f"pdgj @ {addr}")
+                if res and "code" in res:
+                     results.append({"address": addr, "code": res["code"]})
+            except Exception:
+                pass
+        return results
+
     def get_info(self):
         """
         获取二进制文件的基本信息。

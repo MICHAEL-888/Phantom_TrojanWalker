@@ -1,189 +1,105 @@
-import os
-import httpx
-import uvicorn
-import asyncio
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from config_loader import load_config
-from agent_core import FunctionAnalysisAgent, MalwareAnalysisAgent
-from typing import List, Dict, Any
+import logging
+from fastapi import FastAPI, UploadFile, File, Request
+from fastapi.responses import JSONResponse
+from colorama import Fore, Style, init
 from dotenv import load_dotenv
 
-load_dotenv()  # 自动读取 .env 文件并加载到环境变量
+from config_loader import load_config
+from agent_core import FunctionAnalysisAgent, MalwareAnalysisAgent
+from rizin_client import RizinClient
+from analysis_coordinator import AnalysisCoordinator
+from exceptions import TrojanWalkerError
+
+load_dotenv()
+init(autoreset=True)
+
+# 自定义彩色日志格式
+class ColoredFormatter(logging.Formatter):
+    def format(self, record):
+        level_colors = {
+            logging.DEBUG: Fore.BLUE,
+            logging.INFO: Fore.CYAN,
+            logging.WARNING: Fore.YELLOW,
+            logging.ERROR: Fore.RED,
+            logging.CRITICAL: Fore.RED + Style.BRIGHT,
+        }
+        color = level_colors.get(record.levelno, Fore.WHITE)
+        
+        # 组装彩色字符串
+        asctime = f"{Fore.GREEN}{self.formatTime(record, '%Y-%m-%d %H:%M:%S')}{Style.RESET_ALL}"
+        level = f"{color}{record.levelname:<8}{Style.RESET_ALL}"
+        msg = f"{Style.BRIGHT}{record.msg}{Style.RESET_ALL}" if record.levelno == logging.INFO else record.msg
+        
+        return f"{asctime} - {level} - {msg}"
+
+# 配置日志
+handler = logging.StreamHandler()
+handler.setFormatter(ColoredFormatter())
+# 配置根日志或特定模块日志
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+# 避免重复 handler
+if not any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers):
+    root_logger.addHandler(handler)
+
+# 屏蔽第三方库的冗余日志 (如 httpx 和 httpcore)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+# 也是为了确保 agent 模块的日志能打出来
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
-config = load_config()
-RIZIN_BASE_URL = config.plugins["rizin"].base_url
-ENDPOINTS = config.plugins["rizin"].endpoints
 
-# 初始化 Agent
-function_agent = FunctionAnalysisAgent()
-malware_agent = MalwareAnalysisAgent()
+# 全局异常处理: 捕获自定义异常
+@app.exception_handler(TrojanWalkerError)
+async def trojan_walker_exception_handler(request: Request, exc: TrojanWalkerError):
+    logger.error(f"Known Application Error: {str(exc)}")
+    return JSONResponse(
+        status_code=500, # 或者根据异常类型返回不同状态码
+        content={"status": "error", "type": type(exc).__name__, "message": str(exc)},
+    )
 
-async def _check_health(client: httpx.AsyncClient):
-    try:
-        url = f"{RIZIN_BASE_URL}{ENDPOINTS['health_check']}"
-        resp = await client.get(url)
-        if resp.status_code != 200 or resp.json().get("status") != "ok":
-            raise HTTPException(status_code=503, detail="Rizin backend is not healthy")
-    except Exception as e:
-        if isinstance(e, HTTPException): raise e
-        raise HTTPException(status_code=503, detail=f"Rizin backend connection failed: {str(e)}")
+# 全局异常处理: 捕获未知异常
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled Exception: {str(exc)}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"status": "error", "type": "InternalServerError", "message": "An unexpected error occurred."},
+    )
 
-async def _upload_file(client: httpx.AsyncClient, file: UploadFile):
-    content = await file.read()
-    files = {"file": (file.filename, content, file.content_type)}
-    try:
-        url = f"{RIZIN_BASE_URL}{ENDPOINTS['upload']}"
-        resp = await client.post(url, files=files)
-        if resp.status_code != 200:
-            raise HTTPException(status_code=500, detail="Failed to upload file to Rizin backend")
-        return resp.json()
-    except Exception as e:
-        if isinstance(e, HTTPException): raise e
-        raise HTTPException(status_code=500, detail=f"Error uploading file: {str(e)}")
-
-async def _trigger_analysis(client: httpx.AsyncClient):
-    try:
-        url = f"{RIZIN_BASE_URL}{ENDPOINTS['analyze']}"
-        resp = await client.get(url)
-        if resp.status_code != 200:
-            raise HTTPException(status_code=500, detail="Failed to trigger analysis")
-        return resp.json()
-    except Exception as e:
-        if isinstance(e, HTTPException): raise e
-        raise HTTPException(status_code=500, detail=f"Error during analysis: {str(e)}")
-
-async def _get_metadata(client: httpx.AsyncClient) -> Dict[str, Any]:
-    try:
-        url = f"{RIZIN_BASE_URL}{ENDPOINTS['metadata']}"
-        resp = await client.get(url)
-        return resp.json() if resp.status_code == 200 else {}
-    except Exception:
-        return {}
-
-async def _get_functions(client: httpx.AsyncClient) -> List[Dict[str, Any]]:
-    try:
-        url = f"{RIZIN_BASE_URL}{ENDPOINTS['functions']}"
-        resp = await client.get(url)
-        if resp.status_code == 200:
-            return resp.json()
-    except Exception:
-        pass
-    return []
-
-async def _get_strings(client: httpx.AsyncClient) -> List[str]:
-    try:
-        url = f"{RIZIN_BASE_URL}{ENDPOINTS['strings']}"
-        resp = await client.get(url)
-        if resp.status_code == 200:
-            return [s.get("string") for s in resp.json() if "string" in s]
-    except Exception:
-        pass
-    return []
-
-async def _get_callgraph(client: httpx.AsyncClient) -> Dict[str, Any]:
-    try:
-        url = f"{RIZIN_BASE_URL}{ENDPOINTS['callgraph']}"
-        resp = await client.get(url)
-        if resp.status_code == 200:
-            return resp.json()
-    except Exception:
-        pass
-    return {}
-
-async def _get_decompiled_codes(client: httpx.AsyncClient, functions: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-    decompiled_results = []
-    url = f"{RIZIN_BASE_URL}{ENDPOINTS['decompile']}"
-    for f in functions:
-        addr = f.get("offset")
-        name = f.get("name", "unknown")
-        if addr is not None:
-            try:
-                resp = await client.get(url, params={"addr": str(addr)})
-                if resp.status_code == 200:
-                    code = resp.json().get("code")
-                    if code:
-                        decompiled_results.append({
-                            "name": name,
-                            "code": code
-                        })
-            except Exception:
-                continue
-    return decompiled_results
+# 初始化服务组件
+try:
+    logger.info("Initializing services...")
+    config = load_config()
+    
+    # 实例化 Rizin 客户端
+    rizin_client = RizinClient(config)
+    
+    # 实例化 Agents
+    function_agent = FunctionAnalysisAgent()
+    malware_agent = MalwareAnalysisAgent()
+    
+    # 实例化协调器
+    coordinator = AnalysisCoordinator(rizin_client, function_agent, malware_agent)
+    logger.info("Services initialized successfully.")
+except Exception as e:
+    logger.critical(f"Failed to initialize services: {e}")
+    # 这里我们不用 raise e 终止程序，因为 uvicorn 会继续运行，但在请求时可能会报错
+    coordinator = None
 
 @app.post("/analyze")
 async def analyze_endpoint(file: UploadFile = File(...)):
     """
     接收一个文件，并协调 Rizin 后端进行分析，提取元数据、函数、字符串、调用图和反编译代码。
     """
-    async with httpx.AsyncClient(timeout=None) as client:
-        # 1. 检查接口是否存活
-        await _check_health(client)
-
-        # 2. 上传文件
-        await _upload_file(client, file)
-
-        # 3. 触发分析
-        await _trigger_analysis(client)
-
-        # 4. 获取元数据
-        metadata = await _get_metadata(client)
-
-        # 5. 获取函数并过滤
-        raw_funcs = await _get_functions(client)
-        functions_data = [
-            {
-                "name": f.get("name"),
-                "offset": f.get("offset"),
-                "size": f.get("size"),
-                "signature": f.get("signature")
-            }
-            for f in raw_funcs
-        ]
-
-        # 6. 获取字符串
-        strings_data = await _get_strings(client)
-
-        # 7. 获取调用图
-        callgraph_data = await _get_callgraph(client)
-
-        # 8. 获取反编译代码
-        decompiled_codes = await _get_decompiled_codes(client, functions_data)
-
-        # 9. 并行调用 FunctionAnalysisAgent 分析每个函数
-        async def analyze_func(item):
-            # 限制发送给 LLM 的代码长度，防止超长函数导致上下文溢出 (约 100k 字符)
-            MAX_CHAR_LIMIT = 100000
-            code = item["code"]
-            if len(code) > MAX_CHAR_LIMIT:
-                code = code[:MAX_CHAR_LIMIT] + "\n... [Code truncated for AI analysis due to context limits] ..."
-            
-            analysis = await function_agent.analyze(code)
-            return {
-                "name": item["name"],
-                "analysis": analysis
-            }
-
-        tasks = [analyze_func(item) for item in decompiled_codes if item["name"].startswith("fcn.")]
-        function_analysis_results = await asyncio.gather(*tasks)
-
-        # 10. 调用 MalwareAnalysisAgent 进行最终分析
-        final_malware_report = await malware_agent.analyze(
-            analysis_results=function_analysis_results,
-            metadata=metadata,
-            callgraph=callgraph_data
-        )
-
-        return {
-            "metadata": metadata,
-            "functions": functions_data,
-            "strings": strings_data,
-            "callgraph": callgraph_data,
-            "decompiled_code": decompiled_codes,
-            "function_analyses": function_analysis_results,
-            "malware_report": final_malware_report
-        }
+    if coordinator is None:
+        raise TrojanWalkerError("Service not initialized properly.")
+        
+    return await coordinator.analyze_file(file)
 
 if __name__ == "__main__":
+    import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8001)
 

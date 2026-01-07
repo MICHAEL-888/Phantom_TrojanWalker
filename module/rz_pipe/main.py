@@ -1,4 +1,5 @@
 import os, shutil, uuid
+from typing import List
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from analyzer import RizinAnalyzer
 
@@ -44,6 +45,10 @@ def decompile(addr: str): return analyzer.get_decompiled_code(addr)
 
 @app.get("/callgraph")
 def get_callgraph(): return analyzer.get_global_call_graph()
+
+@app.post("/decompile_batch")
+def decompile_batch(addresses: List[str]):
+    return analyzer.get_decompiled_code_batch(addresses)
 
 if __name__ == "__main__":
     import uvicorn

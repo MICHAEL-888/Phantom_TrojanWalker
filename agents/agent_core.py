@@ -3,6 +3,7 @@ from langchain_openai import ChatOpenAI
 from langchain_deepseek import ChatDeepSeek
 from langchain.agents import create_agent
 from config_loader import load_config
+from exceptions import LLMResponseError
 from langchain.messages import AIMessage, SystemMessage, HumanMessage
 
 class FunctionAnalysisAgent:
@@ -26,7 +27,7 @@ class FunctionAnalysisAgent:
         try:
             return json.loads(response.content)
         except Exception:
-            return {"error": "Failed to parse JSON response", "raw": response.content}
+            raise LLMResponseError("Failed to parse JSON response from FunctionAnalysisAgent", raw_response=response.content)
 
 class MalwareAnalysisAgent:
     def __init__(self):
@@ -54,5 +55,5 @@ class MalwareAnalysisAgent:
         try:
             return json.loads(response.content)
         except Exception:
-            return {"error": "Failed to parse JSON response", "raw": response.content}
+            raise LLMResponseError("Failed to parse JSON response from MalwareAnalysisAgent", raw_response=response.content)
 
