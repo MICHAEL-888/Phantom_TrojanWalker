@@ -13,6 +13,11 @@ class LLMConfig(BaseModel):
     max_completion_tokens: Optional[int] = None
     max_input_tokens: Optional[int] = None
 
+class RateLimitConfig(BaseModel):
+    requests_per_second: float = 1.0
+    check_every_n_seconds: float = 0.1
+    max_bucket_size: float = 1.0
+
 class PluginConfig(BaseModel):
     base_url: str
     endpoints: Dict[str, str]
@@ -21,6 +26,8 @@ class AgentConfig(BaseModel):
     system_prompt: str = ""
     system_prompt_path: Optional[str] = None
     llm: LLMConfig
+    rate_limit: Optional[RateLimitConfig] = None
+    max_concurrency: int = 5
 
 class AppConfig(BaseModel):
     plugins: Dict[str, PluginConfig]

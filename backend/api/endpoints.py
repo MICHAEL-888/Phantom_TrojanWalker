@@ -24,13 +24,17 @@ async def analyze_file(file: UploadFile = File(...), db: Session = Depends(get_d
     content = await file.read()
     sha256 = calculate_sha256(content)
     
-    # Check if exists
-    existing_task = db.query(AnalysisTask).filter(AnalysisTask.sha256 == sha256, AnalysisTask.status == "completed").first()
+    # Check if exists (any active or completed task)
+    existing_task = db.query(AnalysisTask).filter(
+        AnalysisTask.sha256 == sha256, 
+        AnalysisTask.status.in_(["completed", "pending", "processing"])
+    ).first()
+    
     if existing_task:
         return {
             "task_id": existing_task.task_id,
-            "status": "completed",
-            "message": "Analysis already exists.",
+            "status": existing_task.status,
+            "message": f"Analysis already {existing_task.status}.",
             "sha256": sha256
         }
     

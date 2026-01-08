@@ -22,6 +22,8 @@ function App() {
   const uploadFile = async () => {
     if (!file) return;
     setStatus("uploading");
+    setReport(null);
+    setError(null);
     const formData = new FormData();
     formData.append("file", file);
 
@@ -30,14 +32,10 @@ function App() {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
       setTaskId(res.data.task_id);
+      setStatus(res.data.status); 
+      
       if (res.data.status === 'completed') {
-        setStatus("completed");
-        // Needs separate fetch for full result if not returned?
-        // Let's assume endpoint creates task. If duplicate, it returns completed but maybe not full result.
-        // Let's force fetch via task_id if completed.
         fetchStatus(res.data.task_id);
-      } else {
-        setStatus("pending");
       }
     } catch (err) {
       console.error(err);

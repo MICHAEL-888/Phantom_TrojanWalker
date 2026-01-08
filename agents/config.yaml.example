@@ -14,19 +14,35 @@ plugins:
 FunctionAnalysisAgent:
   system_prompt: ""
   system_prompt_path: "prompt/FunctionAnalysisAgent.md"
+  max_concurrency: 2
   llm:
     model_name: deepseek-reasoner
     temperature: 0
     api_key: "YOUR_API_KEY_HERE"
     base_url: "https://api.deepseek.com/chat/completions"
     max_retries: 3
+    timeout: 120
+    max_completion_tokens: 32768
+    max_input_tokens: 131072
+  rate_limit:
+    requests_per_second: 10
+    check_every_n_seconds: 0.1
+    max_bucket_size: 10
 
 MalwareAnalysisAgent:
   system_prompt: ""
   system_prompt_path: "prompt/MalwareAnalysisAgent.md"
+  max_concurrency: 2
   llm:
     model_name: deepseek-reasoner
     temperature: 0
     api_key: "YOUR_API_KEY_HERE"
     base_url: "https://api.deepseek.com/chat/completions"
     max_retries: 3
+    timeout: 120
+    max_completion_tokens: 32768
+    max_input_tokens: 131072
+  rate_limit:
+    requests_per_second: 10
+    check_every_n_seconds: 0.1
+    max_bucket_size: 10

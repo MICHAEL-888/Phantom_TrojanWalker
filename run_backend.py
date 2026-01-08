@@ -15,5 +15,10 @@ import logging
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
+from dotenv import load_dotenv
+from colorama import init
+load_dotenv()
+init(autoreset=True)
+
 if __name__ == "__main__":
     uvicorn.run("backend.main:app", host="0.0.0.0", port=8001, reload=True)

@@ -16,6 +16,7 @@ class AnalysisWorker:
         self.queue = asyncio.Queue()
         self.coordinator = None
         self._running = False
+        self._analysis_lock = asyncio.Lock() # Explicit lock to ensure only one analysis runs at a time
 
     async def start(self):
         self.coordinator = create_coordinator()
@@ -27,7 +28,9 @@ class AnalysisWorker:
         while self._running:
             task_id = await self.queue.get()
             try:
-                await self.run_analysis(task_id)
+                # Use lock to strictly enforce single analysis
+                async with self._analysis_lock:
+                    await self.run_analysis(task_id)
             except Exception as e:
                 logger.error(f"Error processing task {task_id}: {e}")
             finally:

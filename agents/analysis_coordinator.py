@@ -85,26 +85,31 @@ class AnalysisCoordinator:
         # 9. AI Analysis (Parallel)
         logger.info(f"Step 9: Analyzing {len(decompiled_codes)} decompiled functions...")
         
+        # 使用 Semaphore 限制并发数
+        max_concurrency = self.func_agent.agent_config.max_concurrency
+        semaphore = asyncio.Semaphore(max_concurrency)
+
         async def analyze_func(item):
-            # 获取配置中的输入限制 (max_input_tokens)
-            MAX_CHAR_LIMIT = self.func_agent.agent_config.llm.max_input_tokens - 10000
-            code = item["code"]
-            if len(code) > MAX_CHAR_LIMIT:
-                code = code[:MAX_CHAR_LIMIT] + "\n... [Code truncated for AI analysis due to context limits] ..."
-            
-            try:
-                analysis = await self.func_agent.analyze(code)
-                return {
-                    "name": item["name"],
-                    "analysis": analysis
-                }
-            except Exception as e:
-                logger.error(f"Function analysis failed for {item['name']}: {e}")
-                # 即使单个函数分析失败，也不要在整个流程中抛出异常，而是记录错误
-                return {
-                    "name": item["name"],
-                    "analysis": {"error": str(e)}
-                }
+            async with semaphore:
+                # 获取配置中的输入限制 (max_input_tokens)
+                MAX_CHAR_LIMIT = self.func_agent.agent_config.llm.max_input_tokens - 10000
+                code = item["code"]
+                if len(code) > MAX_CHAR_LIMIT:
+                    code = code[:MAX_CHAR_LIMIT] + "\n... [Code truncated for AI analysis due to context limits] ..."
+                
+                try:
+                    analysis = await self.func_agent.analyze(code)
+                    return {
+                        "name": item["name"],
+                        "analysis": analysis
+                    }
+                except Exception as e:
+                    logger.error(f"Function analysis failed for {item['name']}: {e}")
+                    # 即使单个函数分析失败，也不要在整个流程中抛出异常，而是记录错误
+                    return {
+                        "name": item["name"],
+                        "analysis": {"error": str(e)}
+                    }
 
         # 仅分析以 fcn. 开头的自动命名函数 (通常是未识别符号的函数)
         target_funcs = [item for item in decompiled_codes if item["name"].startswith("fcn.")]
