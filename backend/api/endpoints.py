@@ -76,6 +76,7 @@ def get_task_status(task_id: str, db: Session = Depends(get_db)):
     return {
         "task_id": task.task_id,
         "status": task.status,
+        "sha256": task.sha256,
         "filename": task.filename,
         "metadata": task.metadata_info,
         "functions": task.functions,
@@ -97,6 +98,8 @@ def get_result_by_hash(sha256: str, db: Session = Depends(get_db)):
     return {
         "task_id": task.task_id,
         "status": task.status,
+        "sha256": task.sha256,
+        "filename": task.filename,
         "metadata": task.metadata_info,
         "functions": task.functions,
         "strings": task.strings,
