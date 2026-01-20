@@ -3,9 +3,11 @@ import axios from 'axios';
 import { Upload, Search, Loader2, FileWarning, CheckCircle, AlertCircle } from 'lucide-react';
 import ReportView from './components/ReportView';
 
-const API_BASE =
-  import.meta.env.VITE_API_BASE ||
-  (import.meta.env.DEV ? "http://localhost:8001/api" : "/api");
+// IMPORTANT: To ensure the browser never talks to backend directly,
+// the frontend always calls a same-origin relative API path.
+// In dev, Vite's proxy handles forwarding. In production, the frontend container
+// runs a small Node gateway that proxies /api/* to the backend.
+const API_BASE = "/api";
 
 function App() {
   const [file, setFile] = useState(null);

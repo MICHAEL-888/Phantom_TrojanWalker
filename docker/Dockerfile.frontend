@@ -29,17 +29,16 @@ COPY frontend/ /app/frontend/
 RUN npm run build
 
 
-FROM debian:latest
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        python3 \
-        ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+FROM node:20-alpine
 
 WORKDIR /app
 COPY --from=build /app/frontend/dist /app/dist
+COPY --from=build /app/frontend/server.mjs /app/server.mjs
 
 EXPOSE 8080
 
-CMD ["python3", "-m", "http.server", "8080", "--directory", "/app/dist"]
+ENV PORT=8080 \
+    DIST_DIR=/app/dist \
+    PTW_BACKEND_BASE_URL=http://host.docker.internal:8001
+
+CMD ["node", "/app/server.mjs"]
