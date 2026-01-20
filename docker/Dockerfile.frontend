@@ -1,0 +1,39 @@
+FROM debian:latest AS build
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        curl \
+        gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js (20.x) on Debian
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app/frontend
+
+COPY frontend/package.json frontend/package-lock.json* /app/frontend/
+RUN npm ci
+
+COPY frontend/ /app/frontend/
+RUN npm run build
+
+
+FROM debian:latest
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3 \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=build /app/frontend/dist /app/dist
+
+EXPOSE 8080
+
+CMD ["python3", "-m", "http.server", "8080", "--directory", "/app/dist"]

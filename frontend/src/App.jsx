@@ -3,7 +3,9 @@ import axios from 'axios';
 import { Upload, Search, Loader2, FileWarning, CheckCircle, AlertCircle } from 'lucide-react';
 import ReportView from './components/ReportView';
 
-const API_BASE = "http://localhost:8001/api";
+const API_BASE =
+  import.meta.env.VITE_API_BASE ||
+  (import.meta.env.DEV ? "http://localhost:8001/api" : "/api");
 
 function App() {
   const [file, setFile] = useState(null);
