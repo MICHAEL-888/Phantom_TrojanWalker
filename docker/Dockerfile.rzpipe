@@ -1,5 +1,8 @@
 FROM rizin/rizin:latest
 
+# The upstream image may default to a non-root user; switch to root for package installation.
+USER 0
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
