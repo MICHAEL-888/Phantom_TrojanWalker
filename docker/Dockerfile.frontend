@@ -16,6 +16,12 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 
 WORKDIR /app/frontend
 
+# Vite only embeds env vars at build time.
+# Allow overriding API base url during image build, e.g.
+#   docker build -f docker/Dockerfile.frontend --build-arg VITE_API_BASE=http://localhost:8001/api -t ptw-frontend .
+ARG VITE_API_BASE=/api
+ENV VITE_API_BASE=${VITE_API_BASE}
+
 COPY frontend/package.json frontend/package-lock.json* /app/frontend/
 RUN npm ci
 
