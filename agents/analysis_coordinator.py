@@ -120,11 +120,32 @@ class AnalysisCoordinator:
         else:
             function_analysis_results = await asyncio.gather(*[analyze_func(func) for func in target_funcs])
 
+        # 9.5 Filter key functions (ATT&CK matched)
+        # 只把“能映射到 ATT&CK 的重点函数”交给最终报告 Agent，减少噪音。
+        # 规则：只要 attack_matches 非空，就视为重点函数（不依赖 confidence 阈值）。
+
+        key_function_analysis_results = []
+        for item in function_analysis_results:
+            analysis = item.get("analysis") if isinstance(item, dict) else None
+            if not isinstance(analysis, dict):
+                continue
+            # skip errored analyses
+            if "error" in analysis:
+                continue
+            attack_matches = analysis.get("attack_matches")
+            if isinstance(attack_matches, list) and len(attack_matches) > 0:
+                key_function_analysis_results.append(item)
+
+        logger.info(
+            "Step 9.5: Selected %d key functions (ATT&CK matched)",
+            len(key_function_analysis_results),
+        )
+
         # 10. Malware Report
-        logger.info("Step 10: Generating final malware analysis report...")
+        logger.info("Step 10: Generating final malware analysis report (ATT&CK-focused)...")
         final_malware_report = await self.malware_agent.analyze(
-            analysis_results=function_analysis_results,
-            metadata=metadata
+            analysis_results=key_function_analysis_results,
+            metadata=metadata,
         )
 
         logger.info(f"Analysis complete for file: {filename}")
