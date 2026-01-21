@@ -75,6 +75,12 @@ FunctionAnalysisAgent:
 
 ### 方式 A（推荐）：Docker Compose
 ```bash
+git clone https://github.com/MICHAEL-888/Phantom_TrojanWalker.git
+cd Phantom_TrojanWalker/agents
+mv config.yaml.example config.yaml
+# 编辑 config.yaml，填入 Base URL 与 LLM Key
+```
+```bash
 docker compose up --build
 ```
 默认端口：Rizin `127.0.0.1:8000`、Backend `127.0.0.1:8001`（API 前缀 `/api`）、Frontend `127.0.0.1:8080`。
@@ -97,6 +103,7 @@ python backend/main.py
 ### Step 3: 启动 前端看板
 ```bash
 cd frontend
+npm install
 npm run dev
 # 默认访问: http://localhost:5173
 ```
