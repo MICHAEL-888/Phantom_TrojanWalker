@@ -1,10 +1,12 @@
-import React from 'react';
+import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
 const ReportView = ({ report }) => {
   if (!report) return null;
+
+  const [maliciousOpen, setMaliciousOpen] = useState(false);
 
   return (
     <div className="space-y-4 text-left">
@@ -89,6 +91,48 @@ const ReportView = ({ report }) => {
                     <ReactMarkdown>{report.malware_report.reason}</ReactMarkdown>
                   </div>
                </div>
+               {report.malware_report.malicious_functions && report.malware_report.malicious_functions.length > 0 && (
+                 <div className="bg-slate-700/50 p-4 rounded border-l-4 border-rose-500">
+                   <div className="flex items-center justify-between mb-3">
+                     <h3 className="font-bold text-lg text-white">Malicious Functions</h3>
+                     <button
+                       onClick={() => setMaliciousOpen(!maliciousOpen)}
+                       aria-expanded={maliciousOpen}
+                       aria-label={maliciousOpen ? 'Collapse malicious functions' : 'Expand malicious functions'}
+                       className="text-slate-200 bg-slate-800/60 hover:bg-slate-800 px-2 py-1 rounded flex items-center justify-center"
+                     >
+                       <svg
+                         className={`w-4 h-4 transform transition-transform ${maliciousOpen ? 'rotate-90' : ''}`}
+                         viewBox="0 0 20 20"
+                         fill="currentColor"
+                         xmlns="http://www.w3.org/2000/svg"
+                       >
+                         <path fillRule="evenodd" clipRule="evenodd" d="M6.293 4.293a1 1 0 011.414 0L13.414 10l-5.707 5.707a1 1 0 01-1.414-1.414L10.586 10 6.293 5.707a1 1 0 010-1.414z" />
+                       </svg>
+                     </button>
+                   </div>
+
+                   {maliciousOpen && (
+                     <div className="space-y-3">
+                       {report.malware_report.malicious_functions.map((fn) => (
+                         <div key={fn.name} className="bg-slate-800 p-3 rounded border border-slate-700 flex items-start justify-between">
+                           <div className="min-w-0">
+                             <div className="text-sm text-slate-400">{fn.name}</div>
+                             <div className="text-sm text-slate-200 mt-1">{fn.reason}</div>
+                           </div>
+                           <div className="ml-4 flex-shrink-0">
+                             <span className={`px-3 py-1 rounded text-xs font-bold uppercase ${
+                               fn.severity === 'critical' ? 'bg-red-800 text-red-100' : fn.severity === 'high' ? 'bg-orange-800 text-orange-100' : fn.severity === 'medium' ? 'bg-yellow-800 text-yellow-100' : 'bg-slate-700 text-slate-200'
+                             }`}>
+                               {fn.severity}
+                             </span>
+                           </div>
+                         </div>
+                       ))}
+                     </div>
+                   )}
+                 </div>
+               )}
            </div>
         ) : (
           <p className="text-slate-400 italic">No malware analysis report generated yet.</p>

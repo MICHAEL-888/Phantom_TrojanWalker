@@ -411,8 +411,6 @@ int64_t sub_XXXXX() {
 
 ```json
 {
-  "function_address": "0x401000",
-  "function_name": "fcn.401000",
   "function_summary": "该函数作为程序入口点，首先调用GetSystemTimeAsFileTime获取随机种子，然后通过LoadLibrary和GetProcAddress动态解析kernel32.dll中的CreateFileW和WriteFile API，用于后续的文件操作初始化。"
 }
 
