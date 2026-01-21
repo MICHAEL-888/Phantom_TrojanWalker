@@ -51,18 +51,36 @@ npm install
 ```
 
 ### 3. 配置信息
-在 `agents/config.yaml` 中配置 LLM API 密钥及后端通信地址：
+在 `agents/config.yaml` 中配置 Rizin 插件地址与两个 Agent 的 LLM 参数（字段名以代码为准，见 `agents/config_loader.py`）：
 ```yaml
-llm:
-  api_key: "your-deepseek-api-key"
-  model: "deepseek-reasoner"
-rizin:
-  base_url: "http://127.0.0.1:8000"
+plugins:
+  rizin:
+    base_url: "http://localhost:8000"
+    endpoints:
+      upload: "/upload"
+      analyze: "/analyze"
+      functions: "/functions"
+
+FunctionAnalysisAgent:
+  system_prompt_path: "prompt/FunctionAnalysisAgent.md"
+  llm:
+    model_name: deepseek-reasoner
+    api_key: "YOUR_API_KEY_HERE"
 ```
 
-## 🚦 快速启动
+提示词会在后端/worker 启动时从 `system_prompt_path` 读取；修改 prompt 后需要重启后端/worker 生效。
 
-若要运行完整框架，请按顺序启动以下三个服务：
+## 🚦 快速启动
+推荐优先使用 docker-compose 启动全套服务，其次再用“纯本地三进程”调试。
+
+### 方式 A（推荐）：Docker Compose
+```bash
+docker compose up --build
+```
+默认端口：Rizin `127.0.0.1:8000`、Backend `127.0.0.1:8001`（API 前缀 `/api`）、Frontend `127.0.0.1:8080`。
+
+### 方式 B：纯本地（开发调试）
+按顺序启动以下三个服务：
 
 ### Step 1: 启动 Rizin 底层引擎
 ```bash
@@ -72,7 +90,7 @@ python module/rz_pipe/main.py
 
 ### Step 2: 启动 分析后台 (Task Logic)
 ```bash
-python run_backend.py
+python backend/main.py
 # 默认监听: http://127.0.0.1:8001
 ```
 
@@ -83,6 +101,8 @@ npm run dev
 # 默认访问: http://localhost:5173
 ```
 
+后端核心 API：`POST /api/analyze`（上传并排队）+ `GET /api/tasks/{task_id}`（轮询结果）。
+
 ## 📂 目录结构
 
 ```text
@@ -91,7 +111,7 @@ npm run dev
 ├── frontend/           # React 前端看板
 ├── module/rz_pipe/     # Rizin API 封装层 (底层引擎)
 ├── data/               # 文件上传及任务数据存储
-└── run_backend.py      # 后端主入口
+└── docker-compose.yml  # 一键启动（推荐）
 ```
 
 ## ⚖️ 法律声明

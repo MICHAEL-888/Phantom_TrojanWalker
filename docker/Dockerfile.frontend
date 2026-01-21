@@ -1,0 +1,44 @@
+FROM debian:latest AS build
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        curl \
+        gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js (20.x) on Debian
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app/frontend
+
+# Vite only embeds env vars at build time.
+# Allow overriding API base url during image build, e.g.
+#   docker build -f docker/Dockerfile.frontend --build-arg VITE_API_BASE=http://localhost:8001/api -t ptw-frontend .
+ARG VITE_API_BASE=/api
+ENV VITE_API_BASE=${VITE_API_BASE}
+
+COPY frontend/package.json frontend/package-lock.json* /app/frontend/
+RUN npm ci
+
+COPY frontend/ /app/frontend/
+RUN npm run build
+
+
+FROM node:20-alpine
+
+WORKDIR /app
+COPY --from=build /app/frontend/dist /app/dist
+COPY --from=build /app/frontend/server.mjs /app/server.mjs
+
+EXPOSE 8080
+
+ENV PORT=8080 \
+    DIST_DIR=/app/dist \
+    PTW_BACKEND_BASE_URL=http://host.docker.internal:8001
+
+CMD ["node", "/app/server.mjs"]
