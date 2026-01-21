@@ -31,6 +31,9 @@ RUN test -f /app/agents/config.yaml || cp /app/agents/config.yaml.example /app/a
 # Runtime writable dirs
 RUN mkdir -p /app/data /app/uploads
 
+# Persisted runtime data (can be overridden by bind/named volumes)
+VOLUME ["/app/data"]
+
 EXPOSE 8001
 
 CMD ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8001"]

@@ -1,39 +1,29 @@
-# Phantom TrojanWalker - AI 恶意软件分析框架指南
+# Phantom TrojanWalker：AI 编码助手工作指南
 
-Phantom TrojanWalker 是一个高度模块化的二进制分析平台，结合了 Rizin (`rz-pipe`) 的底层分析能力、LangChain 的 AI 网络编排以及 FastAPI/React 的现代全栈架构。
+## 架构与数据流（先读这些文件）
+- Rizin 引擎服务（:8000）：[module/rz_pipe/main.py](../module/rz_pipe/main.py) 暴露 `/upload`、`/analyze`、`/functions`、`/strings`、`/callgraph`、`/decompile_batch`。
+- 后端任务服务（:8001）：[backend/main.py](../backend/main.py) + [backend/api/endpoints.py](../backend/api/endpoints.py)；任务持久化在 [backend/models/task.py](../backend/models/task.py)（SQLite）。
+- AI 编排：Coordinator 在 [agents/analysis_coordinator.py](../agents/analysis_coordinator.py)，通过 [agents/rizin_client.py](../agents/rizin_client.py) 调 Rizin HTTP；再并发调用 LLM（见 [agents/agent_core.py](../agents/agent_core.py)）。
 
-## 🏗 全栈架构
-- **Rizin 模块** ([module/rz_pipe/](module/rz_pipe/)): 二进制分析引擎，封装 `rzpipe` 和 `Ghidra` 插件。
-- **AI 智能体层** ([agents/](agents/)): 核心逻辑层，包含 `FunctionAnalysisAgent` (代码审计) 和 `MalwareAnalysisAgent` (综合评估)。
-- **持久化后端** ([backend/](backend/)): v2.0 任务引擎，提供 SQLite 存储和异步分析队列（Worker 模式）。
-- **前端页面** ([frontend/](frontend/)): React + Tailwind + Lucide 组件库构建的分析看板。
+## 本地/容器启动（优先 docker-compose）
+- 一键：`docker compose up --build`（见 [docker-compose.yml](../docker-compose.yml)）
+  - `ph_rzpipe`：`127.0.0.1:8000`
+  - `ph_backend`：`127.0.0.1:8001`（API 前缀 `/api`）
+  - `ph_frontend`：`127.0.0.1:8080`（通过 `VITE_API_BASE=/api` 走后端）
+- 纯本地（开发调试）：`python module/rz_pipe/main.py` + `python backend/main.py`；前端 `cd frontend && npm run dev`。
 
-## 🔄 核心开发流水线
-1. **启动 Rizin 引擎**: `python module/rz_pipe/main.py` (默认端口 8000)。
-2. **启动分析后台**: `python backend/main.py` (默认端口 8001)。
-3. **启动前端**: `cd frontend; npm run dev` (Vite 默认端口 5173)。
-4. **添加新能力**: 在 `RizinAnalyzer` ([module/rz_pipe/analyzer.py](module/rz_pipe/analyzer.py)) 中新增底层方法 -> 在 `agents/agent_core.py` 中封装为 Tool -> 在 `agents/analysis_coordinator.py` 中编排。
+## 关键约定（写代码时按这个来）
+- Rizin 交互只通过 `RizinAnalyzer`/`rzpipe`：优先 `cmdj` 拿结构化数据（`aflj`/`izj`/`ij`/`agC json`）；反编译用 `pdgj @ <addr_or_name>`（见 [module/rz_pipe/analyzer.py](../module/rz_pipe/analyzer.py)）。
+- Rizin HTTP 路由名从 `agents/config.yaml` 的 `plugins.rizin.endpoints` 读取；新增接口时同步更新配置（`RizinClient._request()` 会按 key 组 URL）。
+- LLM 必须返回 JSON：`agents/agent_core.py` 为两个 Agent 都设置了 `model_kwargs={"response_format": {"type": "json_object"}}`，解析失败会抛 `LLMResponseError`。
+- Prompt 来源：`agents/config.yaml` 可配置 `system_prompt_path`，由 [agents/config_loader.py](../agents/config_loader.py) 在启动时读入；修改 prompt 后需要重启后端/worker 让配置重新加载。
 
-## 📏 二进制与 AI 开发规范
-- **Rizin 交互**:
-    - **禁止执行原生 Shell**: 必须通过 `RizinAnalyzer` 实例调用 `cmd` 或 `cmdj`。
-    - **优先 JSON**: 使用 `cmdj` 获取结构化数据（如 `aflj`, `izj`, `ij`）。
-    - **反编译标准**: 调用 `pdgj @ <addr>` 必须确保 `rz-ghidra` 插件已加载。
-- **AI Agent 开发**:
-    - **强制 JSON 响应**: 模型必须配置 `response_format: {"type": "json_object"}`。
-    - **Prompts**: 位于 [agents/prompt/](agents/prompt/)，修改后无需重启，后台会自动重载 Markdown 内容。
-- **数据流与异步**:
-    - **后端通信**: 使用 `httpx.AsyncClient` 进行跨服务调用。
-    - **任务持久化**: 始终通过 `backend/models/task.py` 中的 `AnalysisTask` 模型记录状态，不要在内存中存储大批量任务。
+## 任务系统行为（影响你怎么改后端）
+- 去重：`/api/analyze` 按文件内容 `sha256` 查重（pending/processing/completed 直接复用任务）。
+- 队列：worker 在 [backend/worker/worker.py](../backend/worker/worker.py) 中用 `asyncio.Queue`；并用 `_analysis_lock` 强制“同一时间只跑一个二进制分析”。
+- 结果落库：analysis 的 `metadata/functions/strings/decompiled_code/function_analyses/malware_report` 分列写入 `AnalysisTask`。
 
-## 🔌 技术栈集成
-- **Binary**: `rzpipe`, `rz-ghidra`.
-- **LLM**: `langchain-deepseek` (DeepSeek-Reasoner).
-- **Backend**: FastAPI, SQLAlchemy (SQLite), aiofiles.
-- **Frontend**: Vite, React, TailwindCSS, Axios.
-
-## ⚠️ 异常等级
-- `RizinBackendError`: 引擎层错误（如文件加载失败、插件缺失）。
-- `LLMResponseError`: 模型幻觉或格式错误。
-- `TrojanWalkerError`: 业务逻辑异常，统一在 `agents/exceptions.py` 定义。
+## AI 分析细节（避免误判为 bug）
+- Function 级分析默认只跑 `fcn.*` 自动命名函数（见 [agents/analysis_coordinator.py](../agents/analysis_coordinator.py)）。
+- 反编译代码会按 `max_input_tokens` 做截断（保留余量），并用 `max_concurrency` + Semaphore 控并发。
 

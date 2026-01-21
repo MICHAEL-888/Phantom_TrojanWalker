@@ -1,0 +1,40 @@
+version: "3.9"
+
+services:
+  ph_backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    container_name: ph_backend
+    ports:
+      - "127.0.0.1:8001:8001"
+    volumes:
+      - ./data:/app/data
+      - ./agents/config.yaml:/app/agents/config.yaml:ro
+
+  ph_rzpipe:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.rzpipe
+    container_name: ph_rzpipe
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      - PTW_BACKEND_BASE_URL=http://ph_backend:8001
+    depends_on:
+      - ph_backend
+
+  ph_frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+      args:
+        # Frontend expects API under /api and server.mjs will proxy to backend.
+        - VITE_API_BASE=/api
+    container_name: ph_frontend
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      - PTW_BACKEND_BASE_URL=http://ph_backend:8001
+    depends_on:
+      - ph_backend
