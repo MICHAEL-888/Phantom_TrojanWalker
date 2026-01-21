@@ -28,16 +28,6 @@ const ReportView = ({ report }) => {
     </button>
   );
 
-  const renderBadge = (text, className = 'bg-slate-800 text-slate-200 border border-slate-600') => (
-    <span className={`px-2 py-0.5 rounded text-xs font-semibold ${className}`}>{text}</span>
-  );
-
-  const formatConfidence = (value) => {
-    if (typeof value !== 'number' || Number.isNaN(value)) return null;
-    const clamped = Math.max(0, Math.min(1, value));
-    return (clamped * 100).toFixed(0);
-  };
-
   const renderIocGroup = (title, items) => {
     const safeItems = Array.isArray(items) ? items.filter(Boolean) : [];
     if (safeItems.length === 0) return null;
@@ -166,15 +156,7 @@ const ReportView = ({ report }) => {
                          const techniqueId = ttp?.technique_id || '';
                          const techniqueName = ttp?.technique_name || 'Unknown technique';
                          const tactics = Array.isArray(ttp?.tactics) ? ttp.tactics.filter(Boolean) : [];
-                         const confPct = formatConfidence(ttp?.overall_confidence);
                          const evidenceRefs = Array.isArray(ttp?.evidence_refs) ? ttp.evidence_refs : [];
-
-                         const confidenceClass =
-                           typeof ttp?.overall_confidence === 'number' && ttp.overall_confidence >= 0.8
-                             ? 'bg-emerald-900 text-emerald-100 border border-emerald-700'
-                             : typeof ttp?.overall_confidence === 'number' && ttp.overall_confidence >= 0.5
-                             ? 'bg-orange-900 text-orange-100 border border-orange-700'
-                             : 'bg-slate-800 text-slate-200 border border-slate-600';
 
                          return (
                            <div key={`ttp-${idx}`} className="bg-slate-800 p-4 rounded border border-slate-700">
@@ -195,12 +177,6 @@ const ReportView = ({ report }) => {
                                    </div>
                                  )}
                                </div>
-
-                               {confPct !== null && (
-                                 <div className="flex items-center gap-2 flex-shrink-0">
-                                   {renderBadge(`Confidence ${confPct}%`, confidenceClass)}
-                                 </div>
-                               )}
                              </div>
 
                              {evidenceRefs.length > 0 && (

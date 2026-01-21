@@ -11,7 +11,7 @@
 1) 只输出**一个**JSON对象（不要 Markdown、不要代码块围栏、不要额外解释文字）。
 2) 输出必须可被 JSON 解析器解析，字段必须齐全（即使为空也要给空数组/空对象/空字符串）。
 3) 仅从输入伪代码中推断，不允许臆造未出现的行为、IOC、API、调用链。
-4) 只做“函数级事实 + 证据 + 置信度 + ATT&CK 映射”，不做“最终样本是否恶意”的结论。
+4) 只做“函数级事实 + 证据 + ATT&CK 映射”，不做“最终样本是否恶意”的结论。
 5) 如果证据不足：不要硬凑 ATT&CK；将 attack_matches 置为空数组。
 
 --------------------
@@ -36,14 +36,11 @@ C. 误报抑制（只作为“降低置信度/不映射 ATT&CK”的依据）：
 MITRE ATT&CK 映射规则（核心）
 --------------------
 1) 只在你能指出**本函数中的证据点**时才输出 technique。
-2) 每个 technique 必须包含：technique_name（必填），tactics（至少1项），confidence（0~1），evidence（可追溯）。
+2) 每个 technique 必须包含：technique_name（必填），tactics（至少1项），evidence（可追溯）。
 3) technique_id：
    - 若你能确定，填写如 "T1055" 或 "T1055.001"。
-   - 若无法确定 ID，则 technique_id 置为 ""，并将 confidence 控制在 <= 0.4。
-4) 置信度建议：
-   - 0.8~1.0：出现经典 API 序列/参数组合且目的明确（例如远程注入链条）。
-   - 0.5~0.79：证据较强但缺少完整链条（例如出现 VirtualAlloc(RWX) + 直接执行指针，但缺少来源）。
-   - 0.1~0.49：只有弱线索或可能误报（例如仅有动态解析 API，但未体现敏感目标）。
+  - 若无法确定 ID，则 technique_id 置为 ""，但 technique_name/tactics/evidence 仍需填写清楚。
+4) 不输出任何“置信度/概率/评分”字段；只输出可追溯证据。
 
 --------------------
 输出 JSON Schema（必须严格遵守；字段齐全）
@@ -65,7 +62,6 @@ MITRE ATT&CK 映射规则（核心）
       "technique_id": "",
       "technique_name": "",
       "tactics": [""],
-      "confidence": 0.0,
       "evidence": {
         "api_sequence": [],
         "artifacts": [],
