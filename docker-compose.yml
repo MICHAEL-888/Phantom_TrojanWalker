@@ -17,6 +17,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.rzpipe
     container_name: ph_rzpipe
+    user: "0:0"
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
