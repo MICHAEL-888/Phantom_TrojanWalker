@@ -1,29 +1,31 @@
-# Phantom TrojanWalker：AI 编码助手工作指南
+# Phantom TrojanWalker：Copilot/AI Coding 指南
 
-## 架构与数据流（先读这些文件）
-- Rizin 引擎服务（:8000）：[module/rz_pipe/main.py](../module/rz_pipe/main.py) 暴露 `/upload`、`/analyze`、`/functions`、`/strings`、`/callgraph`、`/decompile_batch`。
-- 后端任务服务（:8001）：[backend/main.py](../backend/main.py) + [backend/api/endpoints.py](../backend/api/endpoints.py)；任务持久化在 [backend/models/task.py](../backend/models/task.py)（SQLite）。
-- AI 编排：Coordinator 在 [agents/analysis_coordinator.py](../agents/analysis_coordinator.py)，通过 [agents/rizin_client.py](../agents/rizin_client.py) 调 Rizin HTTP；再并发调用 LLM（见 [agents/agent_core.py](../agents/agent_core.py)）。
+## 大图（先理解边界）
+- Rizin 引擎服务（:8000）：[module/rz_pipe/main.py](../module/rz_pipe/main.py) 维护“当前打开的二进制”全局状态；提供 `/upload`→`/analyze`→`/metadata`/`/functions`/`/strings`/`/callgraph`/`/decompile_batch`。
+- 后端任务服务（:8001，API 前缀 `/api`）：[backend/api/endpoints.py](../backend/api/endpoints.py) 负责上传/去重/落库；worker 在 [backend/worker/worker.py](../backend/worker/worker.py) 异步出队执行分析；任务模型在 [backend/models/task.py](../backend/models/task.py)（SQLite）。
+- AI 编排：Coordinator 在 [agents/analysis_coordinator.py](../agents/analysis_coordinator.py)，通过 [agents/rizin_client.py](../agents/rizin_client.py) 调 Rizin HTTP，再调用 LLM Agents（[agents/agent_core.py](../agents/agent_core.py)）。
+- 前端：开发态 Vite 代理见 [frontend/vite.config.js](../frontend/vite.config.js)；容器/生产用 [frontend/server.mjs](../frontend/server.mjs) 代理 `/api/* -> PTW_BACKEND_BASE_URL`。
 
-## 本地/容器启动（优先 docker-compose）
-- 一键：`docker compose up --build`（见 [docker-compose.yml](../docker-compose.yml)）
-  - `ph_rzpipe`：`127.0.0.1:8000`
-  - `ph_backend`：`127.0.0.1:8001`（API 前缀 `/api`）
-  - `ph_frontend`：`127.0.0.1:8080`（通过 `VITE_API_BASE=/api` 走后端）
-- 纯本地（开发调试）：`python module/rz_pipe/main.py` + `python backend/main.py`；前端 `cd frontend && npm run dev`。
+## 常用启动方式
+- Docker（推荐）：`docker compose up --build`（见 [docker-compose.yml](../docker-compose.yml)）。
+- 纯本地三进程：`python module/rz_pipe/main.py`（8000）+ `python backend/main.py`（8001）+ `cd frontend && npm run dev`（5173）。
 
-## 关键约定（写代码时按这个来）
-- Rizin 交互只通过 `RizinAnalyzer`/`rzpipe`：优先 `cmdj` 拿结构化数据（`aflj`/`izj`/`ij`/`agC json`）；反编译用 `pdgj @ <addr_or_name>`（见 [module/rz_pipe/analyzer.py](../module/rz_pipe/analyzer.py)）。
-- Rizin HTTP 路由名从 `agents/config.yaml` 的 `plugins.rizin.endpoints` 读取；新增接口时同步更新配置（`RizinClient._request()` 会按 key 组 URL）。
-- LLM 必须返回 JSON：`agents/agent_core.py` 为两个 Agent 都设置了 `model_kwargs={"response_format": {"type": "json_object"}}`，解析失败会抛 `LLMResponseError`。
-- Prompt 来源：`agents/config.yaml` 可配置 `system_prompt_path`，由 [agents/config_loader.py](../agents/config_loader.py) 在启动时读入；修改 prompt 后需要重启后端/worker 让配置重新加载。
+## 项目约定（改代码要对齐）
+- Rizin 交互只走 `RizinAnalyzer`：优先 `cmdj()` 获取结构化输出（`aflj`/`izj`/`ij`/`agC json`），反编译使用 `pdgj @ <addr_or_name>`（见 [module/rz_pipe/analyzer.py](../module/rz_pipe/analyzer.py)）。
+- Rizin HTTP 路由来自 `agents/config.yaml` 的 `plugins.rizin.endpoints`；新增/改接口要同步更新配置。批量反编译为 `POST /decompile_batch`，body 是 JSON 数组（[agents/rizin_client.py](../agents/rizin_client.py)）。
+- LLM 必须返回 JSON：两类 agent 都用 `response_format: json_object`，解析失败会抛 `LLMResponseError`（[agents/agent_core.py](../agents/agent_core.py)）。
+- Prompt 从 `system_prompt_path` 加载（[agents/config_loader.py](../agents/config_loader.py)）；修改 prompt 后需要重启后端/worker 才会重新加载。
 
-## 任务系统行为（影响你怎么改后端）
-- 去重：`/api/analyze` 按文件内容 `sha256` 查重（pending/processing/completed 直接复用任务）。
-- 队列：worker 在 [backend/worker/worker.py](../backend/worker/worker.py) 中用 `asyncio.Queue`；并用 `_analysis_lock` 强制“同一时间只跑一个二进制分析”。
-- 结果落库：analysis 的 `metadata/functions/strings/decompiled_code/function_analyses/malware_report` 分列写入 `AnalysisTask`。
+## 任务系统与并发（容易踩坑）
+- 去重：`POST /api/analyze` 按文件内容 `sha256` 查重（pending/processing/completed 直接复用任务）。
+- 单并发分析：worker 用 `_analysis_lock` 强制同一时刻只跑一个分析（因为 rzpipe 服务侧也是“单 analyzer 全局状态”）。
+- 结果落库是“分列”：`metadata_info/functions/strings/decompiled_code/function_analyses/malware_report` 写入 `AnalysisTask`，不要改成一个大 blob（见 [backend/worker/worker.py](../backend/worker/worker.py)）。
 
-## AI 分析细节（避免误判为 bug）
-- Function 级分析默认只跑 `fcn.*` 自动命名函数（见 [agents/analysis_coordinator.py](../agents/analysis_coordinator.py)）。
-- 反编译代码会按 `max_input_tokens` 做截断（保留余量），并用 `max_concurrency` + Semaphore 控并发。
+## AI 分析策略（别当成 bug）
+- 函数级分析只跑 `fcn.*` 自动命名函数 + 常见入口点（main/WinMain/DllMain 等），并发由 `max_concurrency` 控制；反编译过长会按 `max_input_tokens` 做截断（[agents/analysis_coordinator.py](../agents/analysis_coordinator.py)）。
+- 最终报告只喂 “ATT&CK 有匹配（attack_matches 非空）” 的重点函数，减少噪音（同上）。
+
+## 配置注意
+- `agents/config.yaml` 应对齐 [agents/config.yaml.example](../agents/config.yaml.example)：代码目前按 `plugins.rizin` 取配置（[backend/core/factory.py](../backend/core/factory.py)）。
+- 不要在日志/PR/issue 中泄露 `api_key`；优先用示例配置并在本地注入密钥。
 

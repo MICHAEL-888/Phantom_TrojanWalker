@@ -13,24 +13,36 @@ Phantom TrojanWalker 是一个高度模块化的二进制分析与威胁检测�
 
 ```mermaid
 graph TD
-    User((用户/前端)) -->|上传文件/查询| API[FastAPI Backend :8001]
-    API -->|写入| DB[(SQLite/TaskDB)]
-    API -->|下发任务| Worker[Async Worker]
-    
-    subgraph AI_Core [AI 分析核心]
-        Worker -->|调度| Coord[Analysis Coordinator]
-        Coord -->|提示词工程| LLM[DeepSeek-Reasoner]
-        Coord -->|指令交互| RzClient[Rizin Client]
-    end
+  User((用户/前端)) -->|上传文件/查询| API[FastAPI Backend :8001]
+  API -->|写入/去重| DB[(SQLite/TaskDB)]
+  API -->|下发任务| Worker[Async Worker]
 
-    subgraph Binary_Engine [底层分析引擎]
-        RzClient -->|HTTP/JSON| RzAPI[Rizin Backend :8000]
-        RzAPI -->|rizin/rz-pipe| RzPipe[Rizin Core]
-        RzPipe -->|Plugin| Ghidra[rz-ghidra Decompiler]
-    end
+  subgraph AI_Core [AI 分析核心（两段式 Agent）]
+    Worker -->|调度| Coord[Analysis Coordinator]
 
-    LLM -.->|生成报告| Worker
-    Worker -->|更新状态| DB
+    Coord -->|逐函数反编译结果| FAA[FunctionAnalysisAgent\n（小模型：逐函数分析 + ATT&CK 匹配）]
+    FAA -->|attack_matches（重点函数）| Coord
+
+    Coord -->|仅喂重点函数| MAA[MalwareAnalysisAgent\n（总体研判：汇总 ATT&CK 函数）]
+    MAA -->|调用工具| GhidraMCP[Ghidra MCP\n（自主推理/链路构建）]
+    MAA -->|生成攻击链/最终报告| Coord
+  end
+
+  subgraph Binary_Engine [底层分析引擎]
+    Coord -->|指令交互| RzClient[Rizin Client]
+    RzClient -->|HTTP/JSON| RzAPI[Rizin Backend :8000]
+    RzAPI -->|rizin/rz-pipe| RzPipe[Rizin Core]
+    RzPipe -->|Plugin| Ghidra[rz-ghidra Decompiler]
+  end
+
+  subgraph Knowledge [知识库/规则]
+    ATTACK[(MITRE ATT&CK 矩阵/知识库)]
+  end
+
+  FAA -.->|映射/匹配| ATTACK
+  MAA -.->|战术/技术聚合| ATTACK
+
+  Coord -->|结果落库| DB
 ```
 
 ## 🛠️ 环境准备
