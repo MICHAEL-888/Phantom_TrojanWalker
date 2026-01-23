@@ -22,6 +22,42 @@ class AnalysisCoordinator:
 
     async def analyze_content(self, filename: str, content: bytes, content_type: str = "application/octet-stream") -> Dict[str, Any]:
         logger.info(f"Start analyzing file: {filename}")
+
+        def _normalize_func_name(name: str) -> str:
+            if not name:
+                return ""
+            base = str(name).strip()
+            # rizin often prefixes symbols, keep the last segment for matching
+            for prefix in ("sym.", "fcn.", "sub.", "loc.", "imp.", "obj.", "dbg."):
+                if base.startswith(prefix):
+                    base = base[len(prefix):]
+            # Sometimes symbols still contain dots after stripping a single prefix
+            if "." in base:
+                base = base.split(".")[-1]
+            base = base.lstrip("_")
+            return base.lower()
+
+        def _is_ai_target_function(name: str) -> bool:
+            if not name:
+                return False
+            if str(name).startswith("fcn."):
+                return True
+            normalized = _normalize_func_name(str(name))
+            # Cover common entrypoints across C/C++ and Windows binaries
+            interesting = {
+                "main",
+                "wmain",
+                "winmain",
+                "wwinmain",
+                "dllmain",
+                # Common CRT/loader entrypoints
+                "maincrtstartup",
+                "winmaincrtstartup",
+                "dllmaincrtstartup",
+                "tmaincrtstartup",
+                "wtmaincrtstartup",
+            }
+            return normalized in interesting
         
         # 1. Check Health
         logger.info("Step 1: Checking Rizin backend health...")
@@ -111,20 +147,45 @@ class AnalysisCoordinator:
                         "analysis": {"error": str(e)}
                     }
 
-        # 仅分析以 fcn. 开头的自动命名函数 (通常是未识别符号的函数)
-        target_funcs = [item for item in decompiled_codes if item["name"].startswith("fcn.")]
+        # 分析目标函数：fcn.* 自动命名函数 + 常见入口函数（main/WinMain/DllMain 等）
+        target_funcs = [
+            item
+            for item in decompiled_codes
+            if _is_ai_target_function(item.get("name"))
+        ]
         
         if not target_funcs:
-            logger.info("No 'fcn.*' functions found for AI analysis, skipping function analysis step.")
+            logger.info("No target functions found for AI analysis, skipping function analysis step.")
             function_analysis_results = []
         else:
             function_analysis_results = await asyncio.gather(*[analyze_func(func) for func in target_funcs])
 
+        # 9.5 Filter key functions (ATT&CK matched)
+        # 只把“能映射到 ATT&CK 的重点函数”交给最终报告 Agent，减少噪音。
+        # 规则：只要 attack_matches 非空，就视为重点函数（不依赖 confidence 阈值）。
+
+        key_function_analysis_results = []
+        for item in function_analysis_results:
+            analysis = item.get("analysis") if isinstance(item, dict) else None
+            if not isinstance(analysis, dict):
+                continue
+            # skip errored analyses
+            if "error" in analysis:
+                continue
+            attack_matches = analysis.get("attack_matches")
+            if isinstance(attack_matches, list) and len(attack_matches) > 0:
+                key_function_analysis_results.append(item)
+
+        logger.info(
+            "Step 9.5: Selected %d key functions (ATT&CK matched)",
+            len(key_function_analysis_results),
+        )
+
         # 10. Malware Report
-        logger.info("Step 10: Generating final malware analysis report...")
+        logger.info("Step 10: Generating final malware analysis report (ATT&CK-focused)...")
         final_malware_report = await self.malware_agent.analyze(
-            analysis_results=function_analysis_results,
-            metadata=metadata
+            analysis_results=key_function_analysis_results,
+            metadata=metadata,
         )
 
         logger.info(f"Analysis complete for file: {filename}")

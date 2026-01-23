@@ -19,6 +19,8 @@ services:
     container_name: ph_rzpipe
     ports:
       - "127.0.0.1:8000:8000"
+    volumes:
+      - ./data:/app/data
     environment:
       - PTW_BACKEND_BASE_URL=http://ph_backend:8001
     depends_on:
