@@ -22,6 +22,42 @@ class AnalysisCoordinator:
 
     async def analyze_content(self, filename: str, content: bytes, content_type: str = "application/octet-stream") -> Dict[str, Any]:
         logger.info(f"Start analyzing file: {filename}")
+
+        def _normalize_func_name(name: str) -> str:
+            if not name:
+                return ""
+            base = str(name).strip()
+            # rizin often prefixes symbols, keep the last segment for matching
+            for prefix in ("sym.", "fcn.", "sub.", "loc.", "imp.", "obj.", "dbg."):
+                if base.startswith(prefix):
+                    base = base[len(prefix):]
+            # Sometimes symbols still contain dots after stripping a single prefix
+            if "." in base:
+                base = base.split(".")[-1]
+            base = base.lstrip("_")
+            return base.lower()
+
+        def _is_ai_target_function(name: str) -> bool:
+            if not name:
+                return False
+            if str(name).startswith("fcn."):
+                return True
+            normalized = _normalize_func_name(str(name))
+            # Cover common entrypoints across C/C++ and Windows binaries
+            interesting = {
+                "main",
+                "wmain",
+                "winmain",
+                "wwinmain",
+                "dllmain",
+                # Common CRT/loader entrypoints
+                "maincrtstartup",
+                "winmaincrtstartup",
+                "dllmaincrtstartup",
+                "tmaincrtstartup",
+                "wtmaincrtstartup",
+            }
+            return normalized in interesting
         
         # 1. Check Health
         logger.info("Step 1: Checking Rizin backend health...")
@@ -111,11 +147,15 @@ class AnalysisCoordinator:
                         "analysis": {"error": str(e)}
                     }
 
-        # 仅分析以 fcn. 开头的自动命名函数 (通常是未识别符号的函数)
-        target_funcs = [item for item in decompiled_codes if item["name"].startswith("fcn.")]
+        # 分析目标函数：fcn.* 自动命名函数 + 常见入口函数（main/WinMain/DllMain 等）
+        target_funcs = [
+            item
+            for item in decompiled_codes
+            if _is_ai_target_function(item.get("name"))
+        ]
         
         if not target_funcs:
-            logger.info("No 'fcn.*' functions found for AI analysis, skipping function analysis step.")
+            logger.info("No target functions found for AI analysis, skipping function analysis step.")
             function_analysis_results = []
         else:
             function_analysis_results = await asyncio.gather(*[analyze_func(func) for func in target_funcs])

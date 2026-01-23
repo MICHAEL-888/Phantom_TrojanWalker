@@ -5,7 +5,8 @@ from analyzer import RizinAnalyzer
 
 app = FastAPI()
 analyzer = None
-UPLOAD_DIR = "uploads"
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+UPLOAD_DIR = os.path.join(ROOT_DIR, "data", "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 @app.get("/health_check")
@@ -14,7 +15,8 @@ def health_check(): return {"status": "ok"}
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
     global analyzer
-    path = os.path.join(UPLOAD_DIR, file.filename)
+    safe_name = f"{uuid.uuid4().hex}_{file.filename}"
+    path = os.path.join(UPLOAD_DIR, safe_name)
     
     with open(path, "wb") as f:
         shutil.copyfileobj(file.file, f)

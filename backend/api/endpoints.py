@@ -6,15 +6,15 @@ import os
 import uuid
 import aiofiles
 
-from backend.database import get_db, DB_DIR
+from backend.database import get_db
 from backend.models.task import AnalysisTask
 from backend.worker.worker import worker
 
 router = APIRouter()
 
-UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "uploads")
-if not os.path.exists(UPLOAD_DIR):
-    os.makedirs(UPLOAD_DIR)
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+UPLOAD_DIR = os.path.join(ROOT_DIR, "data", "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 def calculate_sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
