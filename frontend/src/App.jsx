@@ -9,6 +9,16 @@ import ReportView from './components/ReportView';
 // runs a small Node gateway that proxies /api/* to the backend.
 const API_BASE = "/api";
 
+async function sha256HexFromFile(file) {
+  if (!globalThis.crypto?.subtle) {
+    throw new Error('WebCrypto unavailable (needs secure context/HTTPS)');
+  }
+  const buffer = await file.arrayBuffer();
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', buffer);
+  const bytes = new Uint8Array(digest);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 function App() {
   const [file, setFile] = useState(null);
   const [taskId, setTaskId] = useState(null);
@@ -28,8 +38,36 @@ function App() {
     setStatus("uploading");
     setReport(null);
     setError(null);
+
+    let sha256 = null;
+    try {
+      sha256 = await sha256HexFromFile(file);
+      // Pre-dedupe: if task exists for this sha256, reuse it and avoid uploading.
+      const existing = await axios.get(`${API_BASE}/result/${sha256}`);
+      setTaskId(existing.data.task_id);
+      setStatus(existing.data.status);
+      if (existing.data.status === 'completed') {
+        setReport(existing.data);
+      } else if (existing.data.status === 'failed') {
+        setError(existing.data.error || 'Analysis failed.');
+      }
+      return;
+    } catch (err) {
+      // 404 means no existing task -> proceed to upload.
+      // Any other error (e.g. WebCrypto not available) also falls back to upload.
+      if (err?.response?.status && err.response.status !== 404) {
+        console.warn('Pre-dedupe lookup failed, falling back to upload:', err);
+      }
+      if (!sha256 && !globalThis.crypto?.subtle) {
+        console.warn('WebCrypto unavailable; uploading without client-side sha256');
+      }
+    }
+
     const formData = new FormData();
     formData.append("file", file);
+    if (sha256) {
+      formData.append('sha256', sha256);
+    }
 
     try {
       const res = await axios.post(`${API_BASE}/analyze`, formData, {
