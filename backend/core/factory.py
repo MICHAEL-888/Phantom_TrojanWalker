@@ -15,7 +15,8 @@ from agents.rizin_client import RizinClient
 from agents.analysis_coordinator import AnalysisCoordinator
 
 def create_coordinator() -> AnalysisCoordinator:
-    config = load_config("agents/config.yaml")
+    config_path = os.path.join(ROOT_DIR, "agents", "config.yaml")
+    config = load_config(config_path)
 
     rizin_client = RizinClient(config=config)
     
