@@ -23,17 +23,20 @@ class FunctionAnalysisAgent:
                 max_bucket_size=rl_config.max_bucket_size,
             )
 
-        self.llm = ChatOpenAI(
-            name="FunctionAnalysisAgent",
-            base_url=self.agent_config.llm.base_url,
-            model=self.agent_config.llm.model_name, 
-            api_key=self.agent_config.llm.api_key, 
-            max_retries=self.agent_config.llm.max_retries,
-            timeout=self.agent_config.llm.timeout,
-            max_completion_tokens=self.agent_config.llm.max_completion_tokens,
-            rate_limiter=rate_limiter,
-            model_kwargs={"response_format": {"type": "json_object"}}
-            )
+        llm_params = {
+            "name": "FunctionAnalysisAgent",
+            "base_url": self.agent_config.llm.base_url,
+            "model": self.agent_config.llm.model_name,
+            "api_key": self.agent_config.llm.api_key,
+            "max_retries": self.agent_config.llm.max_retries,
+            "timeout": self.agent_config.llm.timeout,
+            "max_completion_tokens": self.agent_config.llm.max_completion_tokens,
+            "rate_limiter": rate_limiter,
+            "model_kwargs": {"response_format": {"type": "json_object"}}
+        }
+        # 过滤掉为 None 的参数，确保空值时使用 LangChain 或 Provider 的默认值
+        llm_params = {k: v for k, v in llm_params.items() if v is not None}
+        self.llm = ChatOpenAI(**llm_params)
 
     async def analyze(self, code: str) -> dict:
         messages = [
@@ -61,17 +64,20 @@ class MalwareAnalysisAgent:
                 max_bucket_size=rl_config.max_bucket_size,
             )
 
-        self.llm = ChatOpenAI(
-            name="MalwareAnalysisAgent",
-            base_url=self.agent_config.llm.base_url,
-            model=self.agent_config.llm.model_name, 
-            api_key=self.agent_config.llm.api_key, 
-            max_retries=self.agent_config.llm.max_retries,
-            timeout=self.agent_config.llm.timeout,
-            max_completion_tokens=self.agent_config.llm.max_completion_tokens,
-            rate_limiter=rate_limiter,
-            model_kwargs={"response_format": {"type": "json_object"}}
-            )
+        llm_params = {
+            "name": "MalwareAnalysisAgent",
+            "base_url": self.agent_config.llm.base_url,
+            "model": self.agent_config.llm.model_name,
+            "api_key": self.agent_config.llm.api_key,
+            "max_retries": self.agent_config.llm.max_retries,
+            "timeout": self.agent_config.llm.timeout,
+            "max_completion_tokens": self.agent_config.llm.max_completion_tokens,
+            "rate_limiter": rate_limiter,
+            "model_kwargs": {"response_format": {"type": "json_object"}}
+        }
+        # 过滤掉为 None 的参数，确保空值时使用 LangChain 或 Provider 的默认值
+        llm_params = {k: v for k, v in llm_params.items() if v is not None}
+        self.llm = ChatOpenAI(**llm_params)
 
     async def analyze(self, analysis_results: list, metadata: dict) -> dict:
         context = {
