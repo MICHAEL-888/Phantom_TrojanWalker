@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Form
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 import hashlib
@@ -20,9 +20,21 @@ def calculate_sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 @router.post("/analyze")
-async def analyze_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    content = await file.read()
-    sha256 = calculate_sha256(content)
+async def analyze_file(
+    file: UploadFile = File(...),
+    sha256: str | None = Form(None),
+    db: Session = Depends(get_db),
+):
+    # Prefer client-provided sha256 to avoid server-side hashing work.
+    # NOTE: This trusts the client hash. If you need integrity, enable a server-side
+    # verification path (not enabled by default).
+    if sha256 is not None:
+        sha256 = sha256.strip().lower()
+        if len(sha256) != 64 or any(c not in "0123456789abcdef" for c in sha256):
+            raise HTTPException(status_code=400, detail="Invalid sha256 format")
+    else:
+        content = await file.read()
+        sha256 = calculate_sha256(content)
     
     # Check if exists (any active or completed task)
     existing_task = db.query(AnalysisTask).filter(
@@ -40,9 +52,16 @@ async def analyze_file(file: UploadFile = File(...), db: Session = Depends(get_d
     
     # Save file
     file_path = os.path.join(UPLOAD_DIR, f"{sha256}_{file.filename}")
-    # Write async
-    async with aiofiles.open(file_path, 'wb') as out_file:
-        await out_file.write(content)
+    # Write async (stream when sha256 provided to avoid buffering whole file)
+    async with aiofiles.open(file_path, "wb") as out_file:
+        if "content" in locals():
+            await out_file.write(content)
+        else:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                await out_file.write(chunk)
         
     # Create Task
     task_uuid = str(uuid.uuid4())
