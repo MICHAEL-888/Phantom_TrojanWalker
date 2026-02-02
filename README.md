@@ -45,6 +45,27 @@ graph TD
   Coord -->|结果落库| DB
 ```
 
+## 🧭 AI 分析样本的 TTP 映射方式
+
+AI 的 ATT&CK/TTP 映射是**两段式、证据驱动**的流程，核心逻辑都在 `agents/analysis_coordinator.py` 与两个提示词文件中：
+
+1. **逐函数映射（FunctionAnalysisAgent）**  
+   - 输入：单个函数的反编译伪代码。  
+   - 规则：仅基于函数内可验证证据（API 序列、关键常量、字符串/路径/注册表等工件）匹配 ATT&CK。  
+   - 输出：`attack_matches` 数组（含 `technique_id/name`、`tactics`、`evidence`），没有证据则输出空数组。  
+   - 对应提示词：`agents/prompt/FunctionAnalysisAgent.md`。
+
+2. **重点函数筛选（Coordinator）**  
+   - 只保留 `attack_matches` 非空的函数作为“重点函数”。  
+   - 位置：`agents/analysis_coordinator.py` 的 Step 9.5（ATT&CK matched filter）。
+
+3. **样本级汇总（MalwareAnalysisAgent）**  
+   - 输入：仅包含重点函数的分析结果 + 二进制 metadata。  
+   - 行为：按 tactic/technique 聚合证据，生成 `key_ttps` 与 `malicious_functions`，并在 `reason` 中引用“函数名 → 证据 → ATT&CK”。  
+   - 对应提示词：`agents/prompt/MalwareAnalysisAgent.md`。
+
+简而言之：**先在函数级别映射 ATT&CK，再在样本级别聚合与解释；没有可追溯证据就不映射。**
+
 ## 🛠️ 环境准备
 
 ### 1. 基础环境
@@ -141,4 +162,3 @@ npm run dev
 
 - [基于大模型的病毒木马文件云鉴定](https://mp.weixin.qq.com/s/G6LyMtzMxtwk5uAMo44euQ)
 - [二进制安全新风向：AI大语言模型协助未知威胁检测与逆向分析](https://www.huorong.cn/document/info/classroom/1887)
-
