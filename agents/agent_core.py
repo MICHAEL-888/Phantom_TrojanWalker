@@ -411,10 +411,11 @@ class MalwareAnalysisAgent:
             if attempt < self._json_retry_attempts:
                 await asyncio.sleep(self._retry_delay(attempt))
 
-        raise LLMResponseError(
-            "Failed to parse JSON response from MalwareAnalysisAgent",
-            raw_response=last_content,
-        )
+        return {
+            "error": "Failed to parse JSON response from MalwareAnalysisAgent",
+            "agent": "MalwareAnalysisAgent",
+            "raw_response": last_content,
+        }
 
     async def _invoke_with_summarization_middleware(
         self,
