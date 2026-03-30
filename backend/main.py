@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 
 def _ensure_import_paths() -> None:
@@ -60,8 +61,20 @@ from backend.database import engine, Base
 from backend.api import endpoints
 from backend.worker.worker import worker
 
+
+def _ensure_runtime_indexes() -> None:
+    """Create performance-critical indexes for existing SQLite deployments."""
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_analysis_tasks_created_at_desc "
+                "ON analysis_tasks (created_at DESC)"
+            )
+        )
+
 # Create tables
 Base.metadata.create_all(bind=engine)
+_ensure_runtime_indexes()
 
 
 @asynccontextmanager
