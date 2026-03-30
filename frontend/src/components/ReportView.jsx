@@ -43,6 +43,10 @@ const ReportView = ({ report }) => {
 
   const metadata = report.metadata;
   const malwareReport = report.malware_report;
+  const extractedIocCount = Object.values(malwareReport?.extracted_iocs || {}).reduce(
+    (count, items) => count + (Array.isArray(items) ? items.length : 0),
+    0
+  );
 
   const renderChevronButton = (open, onClick, expandedLabel, collapsedLabel) => (
     <button
@@ -244,6 +248,9 @@ const ReportView = ({ report }) => {
                    <div className="flex items-center justify-between mb-3">
                      <div className="flex items-center gap-2">
                        <h3 className="font-bold text-lg text-white">Extracted IOCs</h3>
+                       <span className="text-xs text-slate-300 bg-slate-800/60 border border-slate-700 px-2 py-0.5 rounded">
+                         {extractedIocCount}
+                       </span>
                      </div>
                      {renderChevronButton(
                        iocsOpen,
@@ -276,7 +283,12 @@ const ReportView = ({ report }) => {
                {malwareReport.malicious_functions && malwareReport.malicious_functions.length > 0 && (
                  <div className="bg-slate-700/50 p-4 rounded border-l-4 border-rose-500">
                    <div className="flex items-center justify-between mb-3">
-                     <h3 className="font-bold text-lg text-white">Malicious Functions</h3>
+                     <div className="flex items-center gap-2">
+                       <h3 className="font-bold text-lg text-white">Malicious Functions</h3>
+                       <span className="text-xs text-slate-300 bg-slate-800/60 border border-slate-700 px-2 py-0.5 rounded">
+                         {malwareReport.malicious_functions.length}
+                       </span>
+                     </div>
                      {renderChevronButton(
                        maliciousOpen,
                        () => setMaliciousOpen(!maliciousOpen),
