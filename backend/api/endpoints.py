@@ -1,6 +1,6 @@
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Form
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Form, Query
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 from sqlalchemy import desc
 import hashlib
 import os
@@ -135,6 +135,27 @@ def _task_summary_payload(task: AnalysisTask, include_heavy: bool = True) -> dic
     return payload
 
 
+def _task_query(db: Session, include_heavy: bool):
+    """Build a task query that can skip heavy JSON columns when unnecessary."""
+    query = db.query(AnalysisTask)
+    if include_heavy:
+        return query
+
+    return query.options(
+        load_only(
+            AnalysisTask.task_id,
+            AnalysisTask.status,
+            AnalysisTask.sha256,
+            AnalysisTask.filename,
+            AnalysisTask.metadata_info,
+            AnalysisTask.malware_report,
+            AnalysisTask.error_message,
+            AnalysisTask.created_at,
+            AnalysisTask.finished_at,
+        )
+    )
+
+
 def _history_entry_payload(task: AnalysisTask) -> dict:
     """Create JSON-serializable summary for history list."""
     return {
@@ -207,7 +228,7 @@ def get_task_status(
     include_heavy: bool = False,
     db: Session = Depends(get_db),
 ):
-    task = db.query(AnalysisTask).filter(AnalysisTask.task_id == task_id).first()
+    task = _task_query(db, include_heavy=include_heavy).filter(AnalysisTask.task_id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     
@@ -219,7 +240,12 @@ def get_result_by_hash(
     include_heavy: bool = False,
     db: Session = Depends(get_db),
 ):
-    task = db.query(AnalysisTask).filter(AnalysisTask.sha256 == sha256).order_by(desc(AnalysisTask.created_at)).first()
+    task = (
+        _task_query(db, include_heavy=include_heavy)
+        .filter(AnalysisTask.sha256 == sha256)
+        .order_by(desc(AnalysisTask.created_at))
+        .first()
+    )
     if not task:
         raise HTTPException(status_code=404, detail="Analysis not found")
         
@@ -230,8 +256,24 @@ def get_result_by_hash(
     return payload
 
 @router.get("/history")
-def get_recent_history(limit: int = 10, db: Session = Depends(get_db)):
-    tasks = db.query(AnalysisTask).order_by(desc(AnalysisTask.created_at)).limit(limit).all()
+def get_recent_history(limit: int = Query(10, ge=1, le=200), db: Session = Depends(get_db)):
+    tasks = (
+        db.query(AnalysisTask)
+        .options(
+            load_only(
+                AnalysisTask.task_id,
+                AnalysisTask.status,
+                AnalysisTask.sha256,
+                AnalysisTask.filename,
+                AnalysisTask.created_at,
+                AnalysisTask.finished_at,
+                AnalysisTask.error_message,
+            )
+        )
+        .order_by(desc(AnalysisTask.created_at))
+        .limit(limit)
+        .all()
+    )
     # Return a JSON-serializable summary (avoid leaking internal fields/paths).
     payload = [_history_entry_payload(t) for t in tasks]
     return jsonable_encoder(payload)

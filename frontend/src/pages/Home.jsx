@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import { Search, Upload } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
@@ -24,18 +24,86 @@ function buildUploadFormData(selectedFile, sha256) {
   return formData;
 }
 
+function eventHasFiles(event) {
+  return Array.from(event?.dataTransfer?.types || []).includes('Files');
+}
+
 export default function Home() {
   const [selectedFile, setSelectedFile] = useState(null);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [searchHash, setSearchHash] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [errorMessage, setErrorMessage] = useState(null);
   const navigate = useNavigate();
 
-  const handleFileChange = (event) => {
-    const nextFile = event.target.files?.[0] || null;
+  useEffect(() => {
+    const preventWindowFileDrop = (event) => {
+      if (!eventHasFiles(event)) {
+        return;
+      }
+      event.preventDefault();
+    };
+
+    window.addEventListener('dragover', preventWindowFileDrop);
+    window.addEventListener('drop', preventWindowFileDrop);
+
+    return () => {
+      window.removeEventListener('dragover', preventWindowFileDrop);
+      window.removeEventListener('drop', preventWindowFileDrop);
+    };
+  }, []);
+
+  const handleFileSelection = (nextFile) => {
     setSelectedFile(nextFile);
     setErrorMessage(null);
+  };
+
+  const handleFileChange = (event) => {
+    const nextFile = event.target.files?.[0] || null;
+    handleFileSelection(nextFile);
+    setIsDraggingFile(false);
+  };
+
+  const handleDragEnter = (event) => {
+    if (!eventHasFiles(event)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDraggingFile(true);
+  };
+
+  const handleDragOver = (event) => {
+    if (!eventHasFiles(event)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'copy';
+    setIsDraggingFile(true);
+  };
+
+  const handleDragLeave = (event) => {
+    if (!eventHasFiles(event)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    if (!event.currentTarget.contains(event.relatedTarget)) {
+      setIsDraggingFile(false);
+    }
+  };
+
+  const handleDrop = (event) => {
+    if (!eventHasFiles(event)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const nextFile = event.dataTransfer.files?.[0] || null;
+    handleFileSelection(nextFile);
+    setIsDraggingFile(false);
   };
 
   const uploadFile = async () => {
@@ -109,12 +177,24 @@ export default function Home() {
           <h2 className="text-2xl font-bold mb-6 flex items-center">
             <Upload className="mr-2 text-emerald-400" /> Upload Binary
           </h2>
-          <div className="border-2 border-dashed border-slate-600 rounded-lg p-12 text-center hover:border-emerald-500 transition-colors cursor-pointer relative">
-            <input 
-              type="file" 
-              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-              onChange={handleFileChange}
-            />
+          <input
+            id="binary-upload-input"
+            type="file"
+            className="hidden"
+            onChange={handleFileChange}
+          />
+          <label
+            htmlFor="binary-upload-input"
+            onDragEnter={handleDragEnter}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            className={`block border-2 border-dashed rounded-lg p-12 text-center transition-colors cursor-pointer ${
+              isDraggingFile
+                ? 'border-emerald-400 bg-emerald-500/10'
+                : 'border-slate-600 hover:border-emerald-500'
+            }`}
+          >
             {selectedFile ? (
               <div className="text-emerald-400 font-semibold">{selectedFile.name}</div>
             ) : (
@@ -123,7 +203,7 @@ export default function Home() {
                 <p className="text-sm mt-2 opacity-60">Supports PE, ELF, Mach-O</p>
               </div>
             )}
-          </div>
+          </label>
           <button 
             onClick={uploadFile}
             disabled={!selectedFile || isUploading}
