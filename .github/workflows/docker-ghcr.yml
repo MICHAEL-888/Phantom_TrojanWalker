@@ -11,6 +11,12 @@ permissions:
   contents: read
   packages: write
 
+# Refactor note: cancel in-progress builds on the same ref to save runner
+# minutes when pushing repeatedly to a branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   REGISTRY: ghcr.io
 

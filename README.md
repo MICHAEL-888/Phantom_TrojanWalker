@@ -2,6 +2,8 @@
 
 Phantom TrojanWalker 是一个模块化的二进制分析与威胁检测平台，串联 Ghidra 静态分析、LLM 结构化研判与任务化后端，实现从样本上传到报告生成的自动化流水线。
 
+> Agent 层基于 [deepagents](https://github.com/langchain-ai/deepagents) 框架构建，使用 Pydantic 结构化输出保证 LLM 返回可解析的 JSON，无需手动 JSON 修复。
+
 ## 🏗 系统架构
 
 ```mermaid
@@ -20,27 +22,26 @@ graph TD
 
     %% 后端层
     API["Backend (FastAPI)"]:::apiClass
-    DB[("Workdir/SQLite")]:::dbClass
-    Worker["Async Worker"]:::workerClass
+    DB[("SQLite (WAL)")]:::dbClass
+    Worker["Async Worker (单并发锁)"]:::workerClass
 
-    %% AI 核心 - 调整水平布局
-    subgraph AI_Core ["AI Analysis Engine"]
+    %% AI 核心
+    subgraph AI_Core ["AI Analysis Engine (deepagents)"]
         direction TB
         Coord["Analysis Coordinator"]:::aiClass
-        
-        %% 强制水平排列顺序
+
         subgraph Agents [" "]
             direction LR
             GhidraClient["Ghidra Client"]:::aiClass
-            FAA["FunctionAnalysisAgent<br/>(函数分析 + ATT&CK 匹配)"]:::aiClass
-            MAA["MalwareAnalysisAgent<br/>(总体研判)"]:::aiClass
-            
+            FAA["FunctionAnalysisAgent<br/>(create_deep_agent)"]:::aiClass
+            MAA["MalwareAnalysisAgent<br/>(create_deep_agent + MCP 工具)"]:::aiClass
+
             GhidraClient ~~~ FAA ~~~ MAA
         end
     end
 
     %% 二进制引擎
-    subgraph Binary_Engine ["底层分析引擎"]
+    subgraph Binary_Engine ["底层分析引擎 (pyghidra)"]
         GhidraAPI["Ghidra Pipe Module"]:::binaryClass
         GhidraMCP["Ghidra MCP"]:::binaryClass
         GhidraCore["Ghidra Core"]:::binaryClass
@@ -81,11 +82,35 @@ graph TD
 ## 🧩 目录结构
 
 ```text
-├── agents/             # AI 编排层（Coordinator / GhidraClient / Prompts）
+├── agents/             # AI 编排层
+│   ├── agent_core.py          # BaseAgent + FunctionAnalysisAgent + MalwareAnalysisAgent
+│   ├── analysis_coordinator.py # 流水线编排（10 个 step 方法）
+│   ├── ghidra_client.py       # Ghidra HTTP 客户端
+│   ├── schemas.py             # Pydantic 结构化输出模型
+│   ├── llm_factory.py         # ChatOpenAI 构造
+│   ├── mcp_loader.py          # MCP 工具加载
+│   ├── langfuse_utils.py      # Langfuse 追踪 + 调试日志
+│   ├── config_loader.py       # YAML 配置 + 环境变量覆盖
+│   ├── prompt/                # 两个 Agent 的系统提示词
+│   └── config.yaml            # 实际配置（gitignored）
 ├── backend/            # API + 任务系统 + SQLite
-├── frontend/           # React 前端看板
-├── module/             # ghidra_pipe + ghidra_mcp
-├── data/               # 上传文件与任务数据
+│   ├── api/endpoints.py       # /api/* 路由
+│   ├── worker/worker.py       # 异步队列 + 单并发锁
+│   ├── models/task.py         # AnalysisTask ORM
+│   ├── database.py            # SQLAlchemy (WAL)
+│   ├── status.py              # 共享状态常量
+│   └── core/factory.py        # 依赖注入工厂
+├── frontend/           # React + Vite 看板
+│   ├── src/lib/               # 共享 api.js / utils.js
+│   ├── src/hooks/             # useScrollNavbar
+│   ├── src/pages/             # Home / TaskDetail / History
+│   ├── src/components/        # ReportView
+│   └── server.mjs             # 生产静态服务 + API 代理
+├── module/             # Ghidra 服务
+│   ├── ghidra_pipe/           # HTTP 服务（analyzer + 6 个子模块）
+│   └── ghidra_mcp/            # FastMCP 工具服务
+├── docker/             # 3 个 Dockerfile
+├── data/               # 上传文件 + SQLite（gitignored）
 └── docker-compose.yml  # 一键启动
 ```
 
@@ -98,131 +123,144 @@ graph TD
 
 ## ⚙️ 配置
 
-1. 复制配置模板：
+### 1. 配置文件
+
+复制模板并编辑：
 
 ```bash
 cd agents
 cp config.yaml.example config.yaml
 ```
 
-2. 编辑 `agents/config.yaml`，至少配置 LLM 与 Ghidra 地址：
+`agents/config.yaml` 主要包含三部分：
 
-```yaml
-plugins:
-  ghidra:
-    base_url: "http://ph_ghidra:8000"
-    endpoints:
-      health_check: "/health_check"
-      upload: "/upload"
-      analyze: "/analyze"
-      stop_analysis: "/stop_analysis"
-      metadata: "/metadata"
-      functions: "/functions"
-      exports: "/exports"
-      strings: "/strings"
-      callgraph: "/callgraph"
-      decompile: "/decompile"
-      decompile_batch: "/decompile_batch"
-      xrefs: "/xrefs"
-      xrefs_batch: "/xrefs_batch"
-  mcp:
-    base_url: "http://ph_ghidra:9000/mcp"
-    endpoints: {}
+- `plugins.ghidra`：Ghidra HTTP 服务地址 + 13 个 endpoint 路径映射
+- `plugins.mcp`：Ghidra MCP 服务地址
+- `FunctionAnalysisAgent` / `MalwareAnalysisAgent`：LLM 模型、API key、prompt 路径、限流、工具预算
 
-FunctionAnalysisAgent:
-  system_prompt: ""
-  system_prompt_path: "prompt/FunctionAnalysisAgent.md"
-  llm:
-    model_name: deepseek-reasoner
-    temperature: 0  # 建议注释掉该参数使用模型提供商的默认值
-    api_key: "YOUR_API_KEY_HERE"
-    base_url: "https://api.deepseek.com/chat/completions"
-    extra_body: {}
-    max_retries: 3
-    timeout: 120
-    streaming: true
-    max_completion_tokens: 32768
-    max_input_tokens: 131072
-  rate_limit:
-    requests_per_second: 10
-    check_every_n_seconds: 0.1
-    max_bucket_size: 10
+完整模板见 `agents/config.yaml.example`。
 
-MalwareAnalysisAgent:
-  system_prompt: ""
-  system_prompt_path: "prompt/MalwareAnalysisAgent.md"
-  llm:
-    model_name: deepseek-reasoner
-    temperature: 0  # 建议注释掉该参数使用模型提供商的默认值
-    api_key: "YOUR_API_KEY_HERE"
-    base_url: "https://api.deepseek.com/chat/completions"
-    extra_body: {}
-    max_retries: 3
-    timeout: 600
-    streaming: true
-    max_completion_tokens: 32768
-    max_input_tokens: 131072
-  rate_limit:
-    requests_per_second: 10
-    check_every_n_seconds: 0.1
-    max_bucket_size: 10
-  tool_budget:
-    enabled: true
-    max_tool_calls: 12
-    max_agent_steps: 30
-    max_tool_result_chars: 120000
+### 2. LLM API Key
 
+**使用环境变量注入（推荐，secret 不入库）**
 
+```bash
+export PTW_LLM_API_KEY="sk-..."  # 两个 Agent 共用
+# 或按 Agent 单独覆盖：
+export PTW_FUNCTIONANALYSISAGENT_API_KEY="sk-..."
+export PTW_MALWAREANALYSISAGENT_API_KEY="sk-..."
 ```
 
-提示：修改 prompt 或 config 后，需要重启 backend/worker 生效。
+环境变量优先级高于 `config.yaml`。
+
+两个 Agent 的 `llm.max_attempts` 表示一次分析允许的最大总调用次数，包含首次调用；仅超时、连接失败、429 和 5xx 等瞬态错误会触发重试。
+
+### 3. 模型选择建议
+
+- **FunctionAnalysisAgent**：可用小模型（逐函数分析，并发调用）。作者用过 `mistral-medium` / `LongCat-Flash-Lite`。避免用过小的模型（如 4B），知识量不足以做 ATT&CK 矩阵匹配。
+- **MalwareAnalysisAgent**：建议用先进模型（涉及工具调用 + 推理）。作者用 `LongCat-Flash-Thinking-2601`（支持边思考边调工具）。该 Agent 通过 `create_deep_agent` 创建，内置 `SummarizationMiddleware` 自动压缩上下文。
 
 ## 🚀 快速启动
 
 ### 方式 A：Docker Compose（推荐）
 
+**前置**：填好 `agents/config.yaml`（至少 LLM api_key + 模型名）。
+
 ```bash
 docker compose up --build
 ```
 
-默认端口：Ghidra `127.0.0.1:8000`、Backend `127.0.0.1:8001`（`/api`）、Frontend `127.0.0.1:8080`、Ghidra MCP `127.0.0.1:9000`。
+启动顺序由 `depends_on` + healthcheck 保证：`ph_ghidra` → `ph_backend` → `ph_frontend`。
+
+默认端口（均绑定 `127.0.0.1`，仅本机访问）：
+
+| 服务 | 端口 | 说明 |
+|------|------|------|
+| Ghidra Pipe | `8000` | 二进制分析 HTTP 服务 |
+| Ghidra MCP | `9000` | MCP 工具服务（`/mcp`） |
+| Backend | `8001` | API（`/api/*`） |
+| Frontend | `8080` | 前端看板 |
+
+访问 `http://localhost:8080`。
+
+Docker Compose 已配置：
+- `ph_ghidra`：`mem_limit: 2g`、`cpus: 1.5`、`restart: unless-stopped`、healthcheck
+- `ph_backend` / `ph_frontend`：`restart: unless-stopped`、healthcheck
+- 依赖方向：`ph_backend` 等 `ph_ghidra` healthy 后再启动
+
+**国内镜像加速**（可选）：构建 ghidra 镜像时启用清华 apt 源：
+
+```bash
+docker compose build --build-arg USE_CN_MIRROR=1 ph_ghidra
+```
 
 ### 方式 B：纯本地（开发调试）
 
-按顺序启动：
+需要本地已安装 Ghidra 12 + JDK 21。按顺序启动 4 个进程：
 
 ```bash
-# Step 1: Ghidra 引擎
+# Step 1: Ghidra MCP 工具服务（:9000）
 export GHIDRA_INSTALL_DIR=/path/to/ghidra
+python module/ghidra_mcp/main.py
+
+# Step 2: Ghidra Pipe HTTP 服务（:8000）
 python module/ghidra_pipe/main.py
 
-# Step 2: Backend + Worker
+# Step 3: Backend + Worker（:8001）
 python backend/main.py
 
-# Step 3: Frontend
+# Step 4: Frontend dev server（:5173）
 cd frontend
 npm install
 npm run dev
 ```
 
-访问：`http://localhost:5173`
+访问 `http://localhost:5173`。前端 dev server 通过 Vite proxy 将 `/api` 转发到 `localhost:8001`。
 
-## 🔧 常用环境变量
+> 本地开发时 `agents/config.yaml` 中 `plugins.ghidra.base_url` 应指向 `http://localhost:8000`，`plugins.mcp.base_url` 指向 `http://localhost:9000/mcp`。
 
-- `PTW_GHIDRA_BASE_URL`：覆盖 `agents/config.yaml` 中的 `plugins.ghidra.base_url`
-- `PTW_MCP_BASE_URL`：覆盖 MCP 地址
-- `PTW_MAX_UPLOAD_BYTES`：最大上传大小（默认 200MB）
-- `PTW_CORS_ORIGINS`：后端允许的跨域来源（逗号分隔）
-- `BACKEND_HOST` / `BACKEND_PORT`：后端监听地址与端口
-- `GHIDRA_INSTALL_DIR`：本地 Ghidra 安装目录
-- `PHANTOM_DEBUG`：设为 `true` 后启用 `MalwareAnalysisAgent` 抓包式调试日志（完整原始请求/响应会写入 `data/logs/malware_agent_debug.log`）
-- `LANGFUSE_SECRET_KEY` / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_BASE_URL`：启用 Langfuse 可观测（LangChain 回调模式）
+## 🔧 环境变量参考
 
-### Langfuse 可观测（LangChain）
+### 服务地址与端口
 
-按 Langfuse 官方 LangChain 集成方式，本项目会在 LLM 调用时自动挂载 `langfuse.langchain.CallbackHandler`。
+| 变量 | 作用 | 默认值 |
+|------|------|--------|
+| `PTW_GHIDRA_BASE_URL` | 覆盖 `plugins.ghidra.base_url` | `config.yaml` 值 |
+| `PTW_MCP_BASE_URL` | 覆盖 `plugins.mcp.base_url` | `config.yaml` 值 |
+| `PTW_MAX_UPLOAD_BYTES` | 最大上传大小 | `209715200` (200MB) |
+| `PTW_CORS_ORIGINS` | 后端 CORS 来源（逗号分隔） | `http://localhost:5173,3000,8080` |
+| `BACKEND_HOST` / `BACKEND_PORT` | 后端监听 | `0.0.0.0` / `8001` |
+| `GHIDRA_PIPE_HOST` / `GHIDRA_PIPE_PORT` | ghidra_pipe 监听 | `0.0.0.0` / `8000` |
+| `GHIDRA_MCP_HOST` / `GHIDRA_MCP_PORT` | ghidra_mcp 监听 | `0.0.0.0` / `9000` |
 
-在项目根目录创建 `.env`（或导出同名环境变量）：
+### LLM 配置（覆盖 config.yaml）
+
+| 变量 | 作用 |
+|------|------|
+| `PTW_LLM_API_KEY` | 两个 Agent 共用的 API key |
+| `PTW_FUNCTIONANALYSISAGENT_API_KEY` | 仅 FunctionAnalysisAgent 的 key（优先级高于共用） |
+| `PTW_MALWAREANALYSISAGENT_API_KEY` | 仅 MalwareAnalysisAgent 的 key |
+| `PTW_FUNCTIONANALYSISAGENT_MODEL` | 覆盖 FunctionAnalysisAgent 模型名 |
+| `PTW_MALWAREANALYSISAGENT_MODEL` | 覆盖 MalwareAnalysisAgent 模型名 |
+
+### 可观测性
+
+| 变量 | 作用 |
+|------|------|
+| `PHANTOM_DEBUG` | 设为 `true` 启用抓包式调试日志，写入 `data/logs/malware_agent_debug.log` |
+| `LANGFUSE_SECRET_KEY` / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_BASE_URL` | 启用 Langfuse 追踪（三个都设置才启用） |
+
+### Ghidra 环境
+
+| 变量 | 作用 |
+|------|------|
+| `GHIDRA_INSTALL_DIR` | 本地 Ghidra 安装目录（Docker 内置为 `/ghidra`） |
+| `GHIDRA_MCP_ALLOW_ORIGINS` | MCP 服务 CORS 来源（默认 `*`） |
+| `GHIDRA_MCP_TIMEOUT` | MCP 请求超时秒数（默认 `60`） |
+
+### Langfuse 可观测
+
+在项目根目录创建 `.env`：
 
 ```bash
 LANGFUSE_SECRET_KEY="sk-lf-..."
@@ -230,21 +268,23 @@ LANGFUSE_PUBLIC_KEY="pk-lf-..."
 LANGFUSE_BASE_URL="http://localhost:3000"
 ```
 
-Docker 方式重启：
+三个变量都设置时，LLM 调用会自动挂载 `langfuse.langchain.CallbackHandler`。未设置时自动跳过，不影响分析流程。仅需配置 backend 进程环境变量。
 
-```bash
-docker compose up --build -d
-```
+## 📊 数据存储
 
-说明：
-- 未设置上述变量时，会自动跳过 Langfuse（不影响原有分析流程）。
-- 仅需配置 backend/worker 进程环境变量，frontend 与 ghidra 服务无需配置。
+- **上传文件**：`data/uploads/<sha256>`（按内容哈希命名，自动去重）
+- **任务数据库**：`data/analysis.db`（SQLite，WAL 模式）
+- **结果分列存储**：`metadata_info` / `functions` / `strings` / `decompiled_code` / `function_xrefs` / `function_analyses` / `malware_report` 七个 JSON 列
+
+`data/` 目录已 gitignored，Docker 部署时通过 `./data:/app/data` 卷挂载持久化。
 
 ## 🧷 常见问题
 
-- **前端一直 pending**：这是正常队列等待，系统只允许单并发分析。
-- **LLM 解析失败**：LLM 必须返回 JSON object，确认模型/网关支持 `response_format`。
-- **Ghidra 无法启动**：检查 `GHIDRA_INSTALL_DIR` 与 JDK 版本。
+- **前端一直 pending**：正常队列等待。系统因 Ghidra 全局 analyzer 状态强制单并发分析（`worker._analysis_lock`），长队列时需耐心等待。
+- **LLM 解析失败**：Agent 使用 Pydantic `response_format` 强制结构化输出，确认模型/网关支持 tool calling 或 structured output。
+- **Ghidra 无法启动**：检查 `GHIDRA_INSTALL_DIR` 与 JDK 版本（需 21+）。
+- **`config.yaml` 缺少 endpoint**：客户端会 log warning 并 fallback 到 `/<key>`，但建议保持 `config.yaml` 与 `config.yaml.example` 的 endpoints 列表一致。
+- **Docker 构建慢（ghidra 镜像）**：国内用户可加 `--build-arg USE_CN_MIRROR=1` 启用清华 apt 源。
 
 ## ⚖️ 法律声明
 
@@ -312,3 +352,6 @@ MalwareAnalysisAgent尽可能使用先进的模型，该agent涉及到工具调�
 - [基于大模型的病毒木马文件云鉴定](https://mp.weixin.qq.com/s/G6LyMtzMxtwk5uAMo44euQ)
 - [二进制安全新风向：AI大语言模型协助未知威胁检测与逆向分析](https://www.huorong.cn/document/info/classroom/1887)
 
+## 题外话
+
+我是27届本科毕业生，想找一份自动化样本分析的工作，有意可联系邮箱：i_michael@qq.com

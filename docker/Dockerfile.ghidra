@@ -4,15 +4,19 @@ FROM blacktop/ghidra:12 AS base
 
 USER root
 
-# Install Python and build dependencies
-# Switch Ubuntu ports mirror to improve availability in some networks
-RUN if [ -f /etc/apt/sources.list ]; then \
+# Refactor note: the hardcoded Tsinghua mirror rewrite is now opt-in via
+# USE_CN_MIRROR=1. Default (0) keeps the original Ubuntu mirrors for
+# portability outside China.
+ARG USE_CN_MIRROR=0
+RUN if [ "$USE_CN_MIRROR" = "1" ]; then \
+        if [ -f /etc/apt/sources.list ]; then \
             sed -i 's|http://ports.ubuntu.com/ubuntu-ports|https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports|g' /etc/apt/sources.list; \
-        fi \
-        && if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+        fi; \
+        if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
             sed -i 's|http://ports.ubuntu.com/ubuntu-ports|https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports|g' /etc/apt/sources.list.d/ubuntu.sources; \
-        fi \
-        && apt-get update && apt-get install -y --no-install-recommends \
+        fi; \
+    fi \
+    && apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
     python3-venv \
@@ -49,7 +53,7 @@ RUN mkdir -p /app/data/uploads /app/data/projects
 EXPOSE 8000
 EXPOSE 9000
 
-# Run the FastAPI service and the MCP server
-# Keep ghidra_pipe in foreground so forced stop can terminate container process,
-# allowing compose restart policy to recover service automatically.
-CMD ["bash", "-lc", "python module/ghidra_mcp/main.py & python module/ghidra_pipe/main.py"]
+# Run the FastAPI service and the MCP server under a signal-forwarding wrapper.
+COPY docker/start-ghidra.sh /app/start-ghidra.sh
+RUN chmod +x /app/start-ghidra.sh
+CMD ["/app/start-ghidra.sh"]

@@ -15,18 +15,13 @@ class AnalysisTask(Base):
     file_path = Column(String)  # Local path to stored binary
     status = Column(String, default="pending")  # pending, processing, completed, failed
 
-    # Split results
     metadata_info = Column(JSON, nullable=True)
-    functions = Column(JSON, nullable=True)
-    strings = Column(JSON, nullable=True)
-    decompiled_code = Column(JSON, nullable=True)
-    function_xrefs = Column(JSON, nullable=True)  # Per-function cross-references (callers/callees)
-    function_analyses = Column(JSON, nullable=True)
     malware_report = Column(JSON, nullable=True)
 
     error_message = Column(Text, nullable=True)  # If failed
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    # Refactor note: added server_default so updated_at is not NULL on insert.
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     finished_at = Column(DateTime(timezone=True), nullable=True)
 

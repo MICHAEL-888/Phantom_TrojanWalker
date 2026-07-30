@@ -1,8 +1,6 @@
-"""
-Ghidra Pipe FastAPI Service
+"""Ghidra Pipe FastAPI Service.
 
 Provides HTTP endpoints for binary analysis using Ghidra/pyghidra.
-API is compatible with the previous rz_pipe service for seamless migration.
 """
 import os
 import uuid
@@ -11,25 +9,43 @@ import logging
 import hashlib
 import signal
 import time
+from contextlib import asynccontextmanager
 from typing import List
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from analyzer import GhidraAnalyzer
 
-# Configure logging
+try:
+    from .analyzer import GhidraAnalyzer
+except ImportError:  # script-mode execution (python module/ghidra_pipe/main.py)
+    from analyzer import GhidraAnalyzer
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Ghidra Pipe Service", version="1.0.0")
-
-# Global analyzer state (single instance, similar to previous rz_pipe design)
+# Global analyzer state (single instance — Ghidra/JVM is process-global).
 analyzer = None
 analyzer_lock = threading.RLock()
 
-# Upload directory setup
+# Upload directory resolved from repo root.
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 UPLOAD_DIR = os.path.join(ROOT_DIR, "data", "uploads")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+
+def _ensure_upload_dir() -> None:
+    """Create the upload directory on startup (not at import time)."""
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Refactor note: move filesystem side effects out of import time into the
+    # app lifespan so importing this module for testing or introspection does
+    # not create directories.
+    _ensure_upload_dir()
+    yield
+
+
+app = FastAPI(title="Ghidra Pipe Service", version="1.0.0", lifespan=lifespan)
 
 
 def _safe_tmp_upload_path() -> str:
@@ -103,6 +119,63 @@ def _close_analyzer() -> None:
         analyzer = None
 
 
+def _read_proc_memory() -> dict:
+    """Read current process memory counters without adding a runtime dependency."""
+    result = {}
+    try:
+        with open("/proc/self/status", "r", encoding="ascii") as status_file:
+            for line in status_file:
+                key, separator, value = line.partition(":")
+                if separator and key in {"VmRSS", "VmSize", "Threads"}:
+                    parts = value.strip().split()
+                    if parts:
+                        result[key] = int(parts[0]) * (1024 if len(parts) > 1 and parts[1] == "kB" else 1)
+    except (OSError, ValueError):
+        pass
+    return result
+
+
+def _read_cgroup_value(path: str):
+    """Read a cgroup v2 value when available."""
+    try:
+        with open(path, "r", encoding="ascii") as value_file:
+            value = value_file.read().strip()
+        return value if value == "max" else int(value)
+    except (OSError, ValueError):
+        return None
+
+
+def _memory_snapshot() -> dict:
+    """Return process, cgroup, and JVM memory counters for troubleshooting."""
+    snapshot = {
+        "process": _read_proc_memory(),
+        "cgroup": {
+            "current_bytes": _read_cgroup_value("/sys/fs/cgroup/memory.current"),
+            "limit_bytes": _read_cgroup_value("/sys/fs/cgroup/memory.max"),
+        },
+        "jvm": None,
+    }
+
+    try:
+        import java.lang.management
+
+        memory = java.lang.management.ManagementFactory.getMemoryMXBean()
+        heap = memory.getHeapMemoryUsage()
+        non_heap = memory.getNonHeapMemoryUsage()
+        snapshot["jvm"] = {
+            "heap_used_bytes": heap.getUsed(),
+            "heap_committed_bytes": heap.getCommitted(),
+            "heap_max_bytes": heap.getMax(),
+            "non_heap_used_bytes": non_heap.getUsed(),
+            "non_heap_committed_bytes": non_heap.getCommitted(),
+        }
+    except Exception:
+        # JVM is not started before the first upload, or management access is unavailable.
+        pass
+
+    return snapshot
+
+
 def _force_terminate_process(delay_seconds: float = 0.2) -> None:
     """Terminate current process to hard-stop any ongoing Ghidra work."""
     time.sleep(max(delay_seconds, 0.0))
@@ -112,7 +185,17 @@ def _force_terminate_process(delay_seconds: float = 0.2) -> None:
         sig = signal.SIGKILL if hasattr(signal, "SIGKILL") else signal.SIGTERM
         os.kill(pid, sig)
     except Exception:
-        # Last-resort hard exit for environments without signal support.
+        os._exit(1)
+
+
+def _restart_after_close(delay_seconds: float = 0.2) -> None:
+    """Exit after cleanup so compose replaces the JVM with a fresh process."""
+    time.sleep(max(delay_seconds, 0.0))
+    pid = os.getpid()
+    logger.warning("Restarting ghidra_pipe after close (pid=%s)", pid)
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except Exception:
         os._exit(1)
 
 
@@ -122,40 +205,48 @@ def health_check():
     return {"status": "ok"}
 
 
+@app.get("/memory")
+def memory_snapshot():
+    """Expose process/cgroup/JVM memory counters for operational diagnostics."""
+    return _memory_snapshot()
+
+
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
-    """
-    Upload a binary file for analysis.
-    This will close any previously opened analyzer and open the new file.
-    """
+    """Upload a binary for analysis; closes any previously opened analyzer."""
     global analyzer
-    
+
     tmp_path = _safe_tmp_upload_path()
     sha256 = await _stream_to_temp_file(file, tmp_path)
     path = _persist_upload(tmp_path, sha256)
-    
+
     with analyzer_lock:
-        # Close existing analyzer if any
         try:
             _close_analyzer()
         except Exception as e:
             logger.warning(f"Error closing previous analyzer: {e}")
-        
-        # Create new analyzer and open the file
+
         analyzer = GhidraAnalyzer(path)
         if not analyzer.open():
             analyzer = None
             raise HTTPException(500, "Ghidra open failed")
-    
+
     return {"status": "ok"}
 
 
 @app.post("/close")
 def close_analyzer():
     """Explicitly release Ghidra resources for the current binary."""
+    global analyzer
     with analyzer_lock:
+        had_analyzer = analyzer is not None
         _close_analyzer()
-    return {"status": "closed"}
+    restart_scheduled = (
+        had_analyzer and os.getenv("GHIDRA_RESTART_AFTER_CLOSE", "0").lower() in {"1", "true", "yes"}
+    )
+    if restart_scheduled:
+        threading.Thread(target=_restart_after_close, daemon=True).start()
+    return {"status": "closed", "restart_scheduled": restart_scheduled}
 
 
 @app.post("/stop_analysis")
@@ -167,13 +258,10 @@ def stop_analysis():
 
 
 @app.get("/analyze")
-def do_analyze(level: str = "full"):
-    """
-    Trigger analysis on the uploaded binary.
-    The 'level' parameter is kept for API compatibility.
-    """
+def do_analyze():
+    """Trigger Ghidra auto-analysis on the uploaded binary."""
     with analyzer_lock:
-        return require_analyzer().analyze(level)
+        return require_analyzer().analyze()
 
 
 @app.get("/metadata")
@@ -223,21 +311,14 @@ def get_callgraph():
 
 @app.post("/decompile_batch")
 def decompile_batch(addresses: List[str]):
-    """
-    Batch decompile multiple functions.
-    Request body: JSON array of function names or addresses.
-    Returns: list of {address, code} objects.
-    """
+    """Batch decompile; returns list of {address, code}."""
     with analyzer_lock:
         return require_analyzer().get_decompiled_code_batch(addresses)
 
 
 @app.get("/xrefs")
 def get_xrefs(addr: str):
-    """
-    Get cross-references for a single function by address or name.
-    Returns: {name, offset, callers, callees}.
-    """
+    """Get cross-references for a single function. Returns {name, offset, callers, callees}."""
     with analyzer_lock:
         result = require_analyzer().get_function_xrefs(addr)
         if result is None:
@@ -247,15 +328,14 @@ def get_xrefs(addr: str):
 
 @app.post("/xrefs_batch")
 def get_xrefs_batch(addresses: List[str]):
-    """
-    Batch get cross-references for multiple functions.
-    Request body: JSON array of function names or addresses.
-    Returns: list of {name, offset, callers, callees} objects.
-    """
+    """Batch get cross-references; returns list of {name, offset, callers, callees}."""
     with analyzer_lock:
         return require_analyzer().get_function_xrefs_batch(addresses)
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+    host = os.getenv("GHIDRA_PIPE_HOST", "0.0.0.0")
+    port = int(os.getenv("GHIDRA_PIPE_PORT", "8000"))
+    uvicorn.run(app, host=host, port=port)

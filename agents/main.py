@@ -1,3 +1,11 @@
+"""Legacy FastAPI entrypoint for the agents layer.
+
+Refactor note: prefer backend/main.py (v2) which exposes /api/* and drives
+the coordinator via the worker. This file is kept for standalone development.
+Agents now receive AppConfig via DI; bare imports are wrapped in try/except
+so the module works both as a package (from agents.main import app) and as
+a script (python agents/main.py).
+"""
 import logging
 import os
 from typing import Optional
@@ -7,11 +15,18 @@ from fastapi.responses import JSONResponse
 from colorama import Fore, Style, init
 from dotenv import load_dotenv
 
-from config_loader import load_config
-from agent_core import FunctionAnalysisAgent, MalwareAnalysisAgent
-from ghidra_client import GhidraClient
-from analysis_coordinator import AnalysisCoordinator
-from exceptions import TrojanWalkerError
+try:
+    from .config_loader import load_config
+    from .agent_core import FunctionAnalysisAgent, MalwareAnalysisAgent
+    from .ghidra_client import GhidraClient
+    from .analysis_coordinator import AnalysisCoordinator
+    from .exceptions import TrojanWalkerError
+except ImportError:  # script-mode execution (python agents/main.py)
+    from config_loader import load_config
+    from agent_core import FunctionAnalysisAgent, MalwareAnalysisAgent
+    from ghidra_client import GhidraClient
+    from analysis_coordinator import AnalysisCoordinator
+    from exceptions import TrojanWalkerError
 
 
 load_dotenv()
@@ -32,7 +47,6 @@ class ColoredFormatter(logging.Formatter):
     def format(self, record):
         color = self._LEVEL_COLORS.get(record.levelno, Fore.WHITE)
 
-        # 组装彩色字符串（提取为局部变量，降低表达式复杂度）
         timestamp = self.formatTime(record, "%Y-%m-%d %H:%M:%S")
         asctime = f"{Fore.GREEN}{timestamp}{Style.RESET_ALL}"
         level = f"{color}{record.levelname:<8}{Style.RESET_ALL}"
@@ -53,11 +67,9 @@ def configure_logging() -> logging.Logger:
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
 
-    # 避免重复 handler（保持原有行为不变）
     if not any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers):
         root_logger.addHandler(handler)
 
-    # 屏蔽第三方库的冗余日志 (如 httpx 和 httpcore)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
@@ -67,22 +79,22 @@ def configure_logging() -> logging.Logger:
 def build_coordinator(logger: logging.Logger) -> Optional[AnalysisCoordinator]:
     """初始化并构建核心服务对象。
 
-    说明：失败时返回 None，以保持启动流程与原逻辑一致。
+    Refactor note: agents now receive AppConfig via DI instead of calling
+    load_config() internally, so config.yaml is loaded once here.
     """
     try:
         logger.info("Initializing services...")
         config = load_config()
 
         ghidra_client = GhidraClient(config)
-        function_agent = FunctionAnalysisAgent()
-        malware_agent = MalwareAnalysisAgent()
+        function_agent = FunctionAnalysisAgent(config=config)
+        malware_agent = MalwareAnalysisAgent(config=config)
 
         coordinator = AnalysisCoordinator(ghidra_client, function_agent, malware_agent)
         logger.info("Services initialized successfully.")
         return coordinator
     except Exception as exc:
         logger.critical(f"Failed to initialize services: {exc}")
-        # 不抛出异常，保持原有行为：服务仍然启动，但请求会报错
         return None
 
 
@@ -96,7 +108,7 @@ def create_app() -> FastAPI:
     async def trojan_walker_exception_handler(request: Request, exc: TrojanWalkerError):
         logger.error(f"Known Application Error: {str(exc)}")
         return JSONResponse(
-            status_code=500,  # 或者根据异常类型返回不同状态码
+            status_code=500,
             content={
                 "status": "error",
                 "type": type(exc).__name__,
@@ -118,11 +130,8 @@ def create_app() -> FastAPI:
 
     @app.post("/analyze")
     async def analyze_endpoint(file: UploadFile = File(...)):
-        """接收文件并协调 Ghidra 后端进行分析。"""
         if coordinator is None:
-            # 使用卫语句降低嵌套并保持错误语义一致
             raise TrojanWalkerError("Service not initialized properly.")
-
         return await coordinator.analyze_file(file)
 
     return app
@@ -137,4 +146,3 @@ if __name__ == "__main__":
     # Legacy entrypoint (v1). Prefer running backend/main.py (v2) on :8001.
     port = int(os.getenv("AGENTS_PORT", "8002"))
     uvicorn.run(app, host="0.0.0.0", port=port)
-

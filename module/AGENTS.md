@@ -29,17 +29,26 @@
   - 全局变量：`analyzer`（当前打开的二进制）、`analyzer_lock`（RLock）
   - 上传目录：`<repo_root>/data/uploads/`
 - `ghidra_pipe/analyzer.py`
-   - `ghidra_mcp/main.py`
-    - FastMCP server，基于 `/decompile` 与 `/xrefs` 封装为 MCP 工具
-    - 运行地址默认 `http://localhost:9000/mcp`
-  - `GhidraAnalyzer`：对 pyghidra 的轻量封装，统一返回结构化 JSON。
+  - `GhidraAnalyzer`：pyghidra 生命周期 + listing（函数/导出/字符串）+ 元数据组装；
+    反编译/交叉引用/调用图委托给下列子模块。
   - 关键功能映射：
     - `get_info()`：元信息（format, arch, bits 等）
     - `get_functions()`：函数列表
     - `get_strings()`：字符串
-    - `get_global_call_graph()`：全局调用图
-    - `get_decompiled_code_batch()`：批量反编译（DecompInterface）
-    - `get_function_xrefs()` / `get_function_xrefs_batch()`：函数 callers/callees
+    - `get_global_call_graph()`：全局调用图（委托 `callgraph.py`）
+    - `get_decompiled_code_batch()`：批量反编译（委托 `decompile.py`，DecompInterface）
+    - `get_function_xrefs()` / `get_function_xrefs_batch()`：函数 callers/callees（委托 `xrefs.py`）
+- `ghidra_pipe/` 子模块（单一职责，由 `analyzer.py` 委托）：
+  - `_jvm.py`：JVM/pyghidra 一次性启动 + Java 类引用缓存
+  - `formatting.py`：文件大小格式化
+  - `pe_metadata.py`：PE 头解析（subsystem/signed/compiled）
+  - `addressing.py`：函数名/地址解析
+  - `decompile.py`：反编译服务（single/batch 共享 `_decompile_one`）
+  - `xrefs.py`：交叉引用服务（callers/callees/batch）
+  - `callgraph.py`：全局调用图构建（按 entry-address 索引，避免重名冲突）
+- `ghidra_mcp/main.py`
+  - FastMCP server，基于 `/decompile` 与 `/xrefs` 封装为 MCP 工具
+  - 运行地址默认 `http://localhost:9000/mcp`
 
 ---
 
@@ -67,13 +76,12 @@
 输入：multipart/form-data `file`
 
 行为：
-- 将上传文件写入 `<repo_root>/data/uploads/`。
-- 文件名进行白名单过滤并加 uuid 前缀，避免路径/文件系统问题。
+- 将上传文件流式写入 `<repo_root>/data/uploads/`，最终文件名即其 sha256（temp 文件用 uuid 前缀，落盘时改名为 sha256）。
 - 切换全局 `analyzer` 到新文件。
 
 返回：`{"status": "ok"}`（刻意不返回服务器文件路径，避免路径泄露）。
 
-### 4.3 GET /analyze?level=full
+### 4.3 GET /analyze
 行为：
 - 执行 Ghidra 自动分析（analyzeAll）。
 - 返回：`{"status": "done"}` 或 error。
@@ -89,28 +97,28 @@
 返回：`GhidraAnalyzer.get_strings()` -> JSON 列表
 - 每个字符串：`{string, vaddr, section, type, length}`
 
-### 4.6.1 GET /exports
+### 4.7 GET /exports
 返回：`GhidraAnalyzer.get_exports()` -> JSON 列表
 - 每个导出项固定为：`{name, offset}`
 
-### 4.7 GET /callgraph
+### 4.8 GET /callgraph
 返回：`GhidraAnalyzer.get_global_call_graph()`
 - `{nodes: [{id, name, offset}, ...], edges: [{from, to}, ...]}`
 
-### 4.8 POST /decompile_batch
+### 4.9 POST /decompile_batch
 输入：JSON 数组 `List[str]`
 - 每一项可以是函数名或地址（例如 `main`、`FUN_00001234`、`0x401000`）。
 
 输出：JSON 列表
 - `[{"address": "<name_or_addr>", "code": "<decompiled_text>"}, ...]`
 
-### 4.9 GET /xrefs
+### 4.10 GET /xrefs
 输入：query 参数 `addr=<function_name_or_addr>`
 
 输出：
 - `{name, offset, callers, callees}`
 
-### 4.10 POST /xrefs_batch
+### 4.11 POST /xrefs_batch
 输入：JSON 数组 `List[str]`
 
 输出：
@@ -123,13 +131,13 @@
 
 ---
 
-## 4.11 MCP API（ghidra_mcp 服务）
+## 4.12 MCP API（ghidra_mcp 服务）
 
-### 4.11.1 Tool: decompile_function
+### 4.12.1 Tool: decompile_function
 输入：`target`（函数名或地址）
 输出：`{address, code}`（来自 ghidra_pipe /decompile）
 
-### 4.11.2 Tool: function_xrefs
+### 4.12.2 Tool: function_xrefs
 输入：`target`（函数名或地址）
 输出：`{name, offset, callers, callees}`（来自 ghidra_pipe /xrefs）
 

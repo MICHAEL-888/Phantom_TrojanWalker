@@ -1,23 +1,8 @@
-version: "3.9"
+# Refactor note: removed deprecated `version` key. Fixed dependency direction
+# (ph_backend depends on ph_ghidra, not the reverse). Added healthchecks,
+# resource limits for ghidra, and restart policies for all services.
 
 services:
-  ph_backend:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.backend
-    container_name: ph_backend
-    ports:
-      - "127.0.0.1:8001:8001"
-    volumes:
-      - ./data:/app/data
-      - ./agents/config.yaml:/app/agents/config.yaml:ro
-    environment:
-      - PTW_GHIDRA_BASE_URL=http://ph_ghidra:8000
-      - PTW_MCP_BASE_URL=http://ph_ghidra:9000/mcp
-      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
-      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
-      - LANGFUSE_BASE_URL=${LANGFUSE_BASE_URL:-}
-
   ph_ghidra:
     build:
       context: .
@@ -31,24 +16,66 @@ services:
       - ./data:/app/data
     environment:
       - GHIDRA_INSTALL_DIR=/ghidra
+      - GHIDRA_RESTART_AFTER_CLOSE=1
       - GHIDRA_MCP_PORT=9000
       - GHIDRA_PIPE_BASE_URL=http://localhost:8000
       - GHIDRA_MCP_ALLOW_ORIGINS=*
+    # Refactor note: ghidra eats ~1GB RAM (per README); cap to avoid host freeze.
+    mem_limit: 2g
+    cpus: 1.5
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health_check')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  ph_backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    container_name: ph_backend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8001:8001"
+    volumes:
+      - ./data:/app/data
+      - ./agents/config.yaml:/app/agents/config.yaml:ro
+    environment:
+      - PTW_GHIDRA_BASE_URL=http://ph_ghidra:8000
+      - PTW_MCP_BASE_URL=http://ph_ghidra:9000/mcp
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
+      - LANGFUSE_BASE_URL=${LANGFUSE_BASE_URL:-}
+    # Refactor note: backend calls ghidra, so it depends on ghidra being healthy.
     depends_on:
-      - ph_backend
+      ph_ghidra:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   ph_frontend:
     build:
       context: .
       dockerfile: docker/Dockerfile.frontend
       args:
-        # Frontend expects API under /api and server.mjs will proxy to backend.
         - VITE_API_BASE=/api
     container_name: ph_frontend
+    restart: unless-stopped
     ports:
       - "127.0.0.1:8080:8080"
     environment:
       - PTW_BACKEND_BASE_URL=http://ph_backend:8001
     depends_on:
-      - ph_backend
-
+      ph_backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

@@ -1,3 +1,11 @@
+"""FastAPI backend entry point.
+
+Refactor note: table creation + runtime indexes moved from import time into
+the lifespan startup so importing backend.main for introspection/testing does
+not mutate the filesystem. Worker shutdown is now handled in the lifespan.
+The duplicate agents_dir path setup is removed (factory.py is the single
+authority for agents path setup).
+"""
 import logging
 import os
 import sys
@@ -9,16 +17,14 @@ from sqlalchemy import text
 
 
 def _ensure_import_paths() -> None:
-    """Ensure project root + agents are importable when running directly.
+    """Ensure project root is importable when running directly.
 
-    Refactor note: centralize path tweaks to keep module init concise.
+    Refactor note: centralize path tweaks to keep module init concise. Only
+    root_dir is added here; agents/ path setup is handled by core/factory.py.
     """
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if root_dir not in sys.path:
         sys.path.insert(0, root_dir)
-    agents_dir = os.path.join(root_dir, "agents")
-    if agents_dir not in sys.path:
-        sys.path.insert(0, agents_dir)
 
 
 def _configure_logging() -> None:
@@ -72,18 +78,33 @@ def _ensure_runtime_indexes() -> None:
             )
         )
 
-# Create tables
-Base.metadata.create_all(bind=engine)
-_ensure_runtime_indexes()
+
+_LEGACY_COLUMNS = ["functions", "strings", "decompiled_code", "function_xrefs", "function_analyses"]
+
+
+def _drop_legacy_columns() -> None:
+    """Drop columns removed from the model."""
+    for col in _LEGACY_COLUMNS:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE analysis_tasks DROP COLUMN {col}"))
+        except Exception:
+            pass
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
+    # Startup: create tables, indexes, drop legacy columns, create upload dir, and start worker.
+    # Refactor note: moved from import time into lifespan so importing
+    # backend.main does not mutate the filesystem.
+    Base.metadata.create_all(bind=engine)
+    _ensure_runtime_indexes()
+    _drop_legacy_columns()
+    endpoints.ensure_upload_dir()
     await worker.start()
     yield
-    # Shutdown
-    # We could stop worker here if needed
+    # Shutdown: gracefully stop the worker.
+    await worker.stop()
 
 
 app = FastAPI(
@@ -93,8 +114,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS
-# IMPORTANT: When allow_credentials=True, allow_origins cannot include "*".
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_resolve_cors_origins(),
@@ -119,7 +138,6 @@ def main() -> None:
     reload_env = os.getenv("BACKEND_RELOAD", "1")
     reload_enabled = reload_env.lower() in {"1", "true", "yes", "y"}
 
-    # Using import string keeps reload working.
     uvicorn.run("backend.main:app", host=host, port=port, reload=reload_enabled)
 
 
