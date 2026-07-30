@@ -338,8 +338,9 @@ class MalwareAnalysisAgent(BaseAgent):
     Refactor note: create_deep_agent replaces the hand-rolled 146-line
     _invoke_with_summarization_middleware + ToolBudgetMiddleware inner class.
     Built-in SummarizationMiddleware handles context compaction; response_format
-    handles structured output; recursion_limit bounds tool calls. Retry handling
-    covers transient provider failures and invalid structured output.
+    handles structured output; ToolCallLimitMiddleware enforces the tool budget,
+    while recursion_limit remains a separate runaway-graph safeguard. Retry
+    handling covers transient provider failures and invalid structured output.
 
     deepagent strips: create_deep_agent forces a bundled BASE_AGENT_PROMPT,
     TodoListMiddleware (write_todos), FilesystemMiddleware (ls/read_file/
@@ -392,11 +393,6 @@ class MalwareAnalysisAgent(BaseAgent):
             if isinstance(budget_cfg.max_agent_steps, int) and budget_cfg.max_agent_steps > 0:
                 max_agent_steps = budget_cfg.max_agent_steps
 
-        # Hard-cap graph recursion to indirectly bound tool calls.
-        # In ReAct-style loops, one tool call generally consumes ~2 steps.
-        derived_step_cap = max(4, max_tool_calls * 2 + 2)
-        max_agent_steps = min(max_agent_steps, derived_step_cap)
-
         return enabled, max_tool_calls, max_agent_steps
 
     async def analyze(self, analysis_results: list, metadata: dict) -> dict:
@@ -425,6 +421,16 @@ class MalwareAnalysisAgent(BaseAgent):
         # subagents=[] + the registered profile's GeneralPurposeSubagentProfile
         # (enabled=False) ensures no auto-added GP subagent and no `task` tool.
         from deepagents import create_deep_agent
+        from langchain.agents.middleware import ToolCallLimitMiddleware
+
+        middleware = []
+        if tools:
+            middleware.append(
+                ToolCallLimitMiddleware(
+                    run_limit=max_tool_calls,
+                    exit_behavior="continue",
+                )
+            )
 
         agent = create_deep_agent(
             model=self._llm,
@@ -432,6 +438,7 @@ class MalwareAnalysisAgent(BaseAgent):
             system_prompt=self.agent_config.system_prompt,
             response_format=MalwareReport,
             subagents=[],
+            middleware=middleware,
         )
 
         messages = [{"role": "user", "content": json.dumps(context, ensure_ascii=False, indent=2)}]
