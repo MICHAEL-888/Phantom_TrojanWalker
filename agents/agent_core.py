@@ -134,7 +134,7 @@ class BaseAgent:
                 "ls", "read_file", "write_file", "edit_file", "delete",
                 "glob", "grep", "execute",
             }),
-            excluded_middleware=frozenset({"TodoListMiddleware"}),
+            excluded_middleware=frozenset(),
             general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
         )
         for key in (f"openai:{model_name}", "openai"):
