@@ -6,10 +6,6 @@ class GhidraBackendError(TrojanWalkerError):
     """远程 Ghidra 后端服务不可达或通信失败"""
     pass
 
-class GhidraAnalysisError(GhidraBackendError):
-    """Ghidra 分析执行失败"""
-    pass
-
 class GhidraTimeoutError(GhidraBackendError):
     """远程 Ghidra 后端请求超时"""
 

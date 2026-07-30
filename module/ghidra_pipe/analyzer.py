@@ -1,51 +1,71 @@
-"""
-GhidraAnalyzer: A module for binary analysis using pyghidra.
-Provides functions, strings, metadata, call graph, and decompilation.
+"""GhidraAnalyzer: lifecycle + listing operations for binary analysis.
+
+Refactor note: previously a ~818-line god class handling lifecycle, listing,
+PE parsing, formatting, decompilation, xrefs, and call-graph building. The
+single-responsibility sub-services now live in sibling modules; this module
+keeps program lifecycle, listing (functions/exports/strings), metadata assembly,
+and delegation to the sub-services.
+
+Bug fixes folded into this refactor:
+- open(): wrap self._ctx.__enter__() in try/finally so a partial failure calls
+  __exit__ instead of leaking the pyghidra context.
+- close(): per-resource try/finally so a closeProgram() failure still runs
+  __exit__ and temp-project cleanup.
+- bin.os: previously identical to bin.compiler (both returned the compiler spec
+  ID); now derived from the executable format (PE->Windows, ELF->Linux, ...).
+- analyze(): dropped the dead `level` parameter (Ghidra always does full analysis).
 """
 import os
-import logging
+import shutil
 import tempfile
-from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional
+import logging
+from typing import Any, Dict, List, Optional
+
+try:
+    from . import _jvm
+    from .formatting import get_sizes
+    from .pe_metadata import parse_pe_metadata
+    from . import decompile as _decompile_svc
+    from . import xrefs as _xref_svc
+    from . import callgraph as _callgraph_svc
+except ImportError:  # script-mode execution (python module/ghidra_pipe/main.py)
+    import _jvm
+    from formatting import get_sizes
+    from pe_metadata import parse_pe_metadata
+    import decompile as _decompile_svc
+    import xrefs as _xref_svc
+    import callgraph as _callgraph_svc
 
 logger = logging.getLogger(__name__)
 
-# Lazy-loaded Ghidra/Java classes (populated after pyghidra.start())
-_ghidra_started = False
-_DecompInterface = None
-_DecompileOptions = None
-_ConsoleTaskMonitor = None
-_StringDataInstance = None
+
+# Executable format -> OS label. Refactor note: centralized so the metadata
+# builder does not duplicate platform heuristics.
+_FORMAT_OS_MAP = (
+    ("PE", "Windows"),
+    ("ELF", "Linux"),
+    ("Mach-O", "macOS"),
+    ("COFF", "Windows"),
+)
 
 
-def _ensure_ghidra_started():
-    """Initialize pyghidra/JVM if not already started."""
-    global _ghidra_started, _DecompInterface, _DecompileOptions, _ConsoleTaskMonitor, _StringDataInstance
-    if _ghidra_started:
-        return
-    
-    import pyghidra
-    pyghidra.start()
-    
-    # Import Ghidra Java classes via JPype bridge
-    from ghidra.app.decompiler import DecompInterface, DecompileOptions
-    from ghidra.util.task import ConsoleTaskMonitor
-    from ghidra.program.model.data import StringDataInstance
-    
-    _DecompInterface = DecompInterface
-    _DecompileOptions = DecompileOptions
-    _ConsoleTaskMonitor = ConsoleTaskMonitor
-    _StringDataInstance = StringDataInstance
-    _ghidra_started = True
-    logger.info("Ghidra/pyghidra initialized successfully")
+def _derive_os(exe_format: Any) -> str:
+    if not exe_format:
+        return "unknown"
+    fmt = str(exe_format).upper()
+    for token, os_label in _FORMAT_OS_MAP:
+        if token in fmt:
+            return os_label
+    return "unknown"
 
 
 class GhidraAnalyzer:
+    """Analyzer for binary files using Ghidra/pyghidra.
+
+    Holds program lifecycle and listing operations; decompilation, xrefs, and
+    call-graph building are delegated to sibling service modules.
     """
-    Analyzer class for binary files using Ghidra/pyghidra.
-    Provides API similar to RizinAnalyzer for compatibility.
-    """
-    
+
     def __init__(self, file_path: str):
         self.file_path = file_path
         self._ctx = None
@@ -53,45 +73,53 @@ class GhidraAnalyzer:
         self._program = None
         self._decompiler = None
         self._project_dir = None
-    
+
     def open(self) -> bool:
-        """
-        Initialize Ghidra and open the binary file.
-        Returns True on success, False on failure.
+        """Initialize Ghidra and open the binary. Returns True on success.
+
+        Refactor note: the pyghidra context manager is now wrapped in try/except
+        so a failure after __enter__ still calls __exit__ and releases the JVM
+        program handle instead of leaking it.
         """
         try:
-            _ensure_ghidra_started()
+            _jvm.ensure_ghidra_started()
 
             import pyghidra
 
-            # Create a temporary project directory for this analysis.
-            # NOTE: Extracted for clarity and to isolate side effects.
             self._project_dir = tempfile.mkdtemp(prefix="ghidra_project_")
             project_name = "TempProject"
 
-            # Open the program with pyghidra (analyze=False, we'll do it explicitly)
-            # Store the context manager to prevent garbage collection closing the program
             self._ctx = pyghidra.open_program(
                 self.file_path,
                 analyze=False,
                 project_location=self._project_dir,
-                project_name=project_name
+                project_name=project_name,
             )
-            self._flat_api = self._ctx.__enter__()
+            try:
+                self._flat_api = self._ctx.__enter__()
+                self._program = self._flat_api.getCurrentProgram()
 
-            self._program = self._flat_api.getCurrentProgram()
-
-            # Initialize decompiler interface
-            self._decompiler = _DecompInterface()
-            options = _DecompileOptions()
-            options.setWARNCommentIncluded(False)
-            options.setHeadCommentIncluded(False)
-            options.setPLATECommentIncluded(False)
-            options.setPRECommentIncluded(False)
-            options.setPOSTCommentIncluded(False)
-            options.setEOLCommentIncluded(False)
-            self._decompiler.setOptions(options)
-            self._decompiler.openProgram(self._program)
+                DecompInterface = _jvm.get_decomp_interface_cls()
+                DecompileOptions = _jvm.get_decompile_options_cls()
+                self._decompiler = DecompInterface()
+                options = DecompileOptions()
+                options.setWARNCommentIncluded(False)
+                options.setHeadCommentIncluded(False)
+                options.setPLATECommentIncluded(False)
+                options.setPRECommentIncluded(False)
+                options.setPOSTCommentIncluded(False)
+                options.setEOLCommentIncluded(False)
+                self._decompiler.setOptions(options)
+                self._decompiler.openProgram(self._program)
+            except Exception:
+                # Refactor note: ensure the context manager is exited if anything
+                # after __enter__ fails, then re-raise to the caller.
+                try:
+                    self._ctx.__exit__(None, None, None)
+                except Exception:
+                    pass
+                self._ctx = None
+                raise
 
             logger.info(f"Opened binary: {self.file_path}")
             return True
@@ -99,154 +127,119 @@ class GhidraAnalyzer:
         except Exception as e:
             logger.error(f"Error opening binary with Ghidra: {e}")
             return False
-    
-    def analyze(self, level: str = "full") -> Dict[str, str]:
-        """
-        Execute analysis on the binary.
-        level is kept for API compatibility but Ghidra always does full analysis.
-        """
+
+    def analyze(self) -> Dict[str, str]:
+        """Execute Ghidra auto-analysis on the opened binary."""
         if not self._program:
             return {"status": "error", "message": "Program not opened"}
-        
         try:
-            # Run Ghidra auto-analysis
             self._flat_api.analyzeAll(self._program)
             logger.info("Ghidra analysis completed")
             return {"status": "done"}
         except Exception as e:
             logger.error(f"Analysis error: {e}")
             return {"status": "error", "message": str(e)}
-    
+
+    # ------------------------------------------------------------------
+    # Listing operations
+    # ------------------------------------------------------------------
     def get_functions(self) -> List[Dict[str, Any]]:
-        """
-        Get list of functions in the binary.
-        Returns list of dicts with: name, offset, size, signature
-        """
+        """List functions: {name, offset, size, signature}."""
         if not self._program:
             return []
-        
-        functions = []
         try:
             func_manager = self._program.getFunctionManager()
-            for func in self._iter_functions(func_manager):
+            functions = []
+            for func in func_manager.getFunctions(True):
                 entry = func.getEntryPoint()
                 body = func.getBody()
-
-                func_info = {
+                functions.append({
                     "name": func.getName(),
                     "offset": entry.getOffset() if entry else 0,
                     "size": body.getNumAddresses() if body else 0,
-                    "signature": func.getSignature().getPrototypeString() if func.getSignature() else ""
-                }
-                functions.append(func_info)
-            
+                    "signature": func.getSignature().getPrototypeString() if func.getSignature() else "",
+                })
             logger.info(f"Found {len(functions)} functions")
             return functions
-            
         except Exception as e:
             logger.error(f"Error getting functions: {e}")
             return []
 
     def get_exports(self) -> List[Dict[str, Any]]:
-        """
-        Get export table entries from the binary.
-        Returns list of dicts with: name, offset
-        """
+        """List export table entries: {name, offset}."""
         if not self._program:
             return []
-
-        exports = []
-        seen = set()
         try:
             symbol_table = self._program.getSymbolTable()
             func_manager = self._program.getFunctionManager()
             entry_iter = symbol_table.getExternalEntryPointIterator()
 
+            exports = []
+            seen = set()
             for addr in entry_iter:
                 if not addr:
                     continue
-
                 offset = addr.getOffset()
-                export_name = self._get_symbol_name_at(symbol_table, addr)
-
-                func = func_manager.getFunctionAt(addr)
-                if not func:
-                    func = func_manager.getFunctionContaining(addr)
+                export_name = _get_symbol_name_at(symbol_table, addr)
+                func = func_manager.getFunctionAt(addr) or func_manager.getFunctionContaining(addr)
                 function_name = func.getName() if func else None
-
                 dedupe_key = (offset, export_name, function_name)
                 if dedupe_key in seen:
                     continue
                 seen.add(dedupe_key)
-
-                exports.append({
-                    "name": export_name,
-                    "offset": offset,
-                })
+                exports.append({"name": export_name, "offset": offset})
 
             logger.info(f"Found {len(exports)} export entries")
             return exports
-
         except Exception as e:
             logger.error(f"Error getting exports: {e}")
             return []
-    
+
     def get_strings(self) -> List[Dict[str, Any]]:
-        """
-        Get strings from the binary.
-        Returns list of dicts with: string, vaddr, section, type, length
-        """
+        """List strings: {string, vaddr, section, type, length}."""
         if not self._program:
             return []
-        
-        strings = []
         try:
             listing = self._program.getListing()
-            data_iter = listing.getDefinedData(True)  # Forward iteration
-
-            for data in data_iter:
-                type_name = self._get_data_type_name(data)
-                if not self._is_string_type(type_name):
-                    continue  # Guard clause to reduce nesting
-
-                str_value = self._safe_string_value(data)
+            strings = []
+            for data in listing.getDefinedData(True):
+                type_name = _get_data_type_name(data)
+                if not _is_string_type(type_name):
+                    continue
+                str_value = _safe_string_value(data)
                 if not str_value:
                     continue
-
                 addr = data.getAddress()
                 strings.append({
                     "string": str_value,
                     "vaddr": addr.getOffset() if addr else 0,
-                    "section": "",  # Ghidra doesn't expose section info directly here
+                    "section": "",  # Ghidra does not expose section info here
                     "type": type_name,
-                    "length": len(str_value)
+                    "length": len(str_value),
                 })
-            
             logger.info(f"Found {len(strings)} strings")
             return strings
-            
         except Exception as e:
             logger.error(f"Error getting strings: {e}")
             return []
-    
+
+    # ------------------------------------------------------------------
+    # Metadata
+    # ------------------------------------------------------------------
     def get_info(self) -> Dict[str, Any]:
-        """
-        Get binary metadata/info.
-        Returns dict compatible with existing frontend expectations.
-        """
+        """Assemble frontend-compatible metadata (core + bin)."""
         if not self._program:
             return {}
-        
         try:
             lang = self._program.getLanguage()
             compiler_spec = self._program.getCompilerSpec()
             exe_format = self._program.getExecutableFormat()
 
-            # 说明：将复杂逻辑拆分成小函数，降低嵌套、提升可读性。
-            file_size, human_size = self._get_file_sizes()
-            subsys, signed, compiled = self._get_pe_metadata(exe_format)
+            file_size, human_size = get_sizes(self.file_path)
+            subsys, signed, compiled = parse_pe_metadata(exe_format, self.file_path)
 
-            return self._build_info_payload(
+            return _build_info_payload(
+                file_path=self.file_path,
                 lang=lang,
                 compiler_spec=compiler_spec,
                 exe_format=exe_format,
@@ -256,563 +249,167 @@ class GhidraAnalyzer:
                 signed=signed,
                 compiled=compiled,
             )
-
         except Exception as e:
             logger.error(f"Error getting info: {e}")
             return {}
 
-    def _get_file_sizes(self) -> tuple[Optional[int], Optional[str]]:
-        """Get raw file size and human-readable size."""
-        try:
-            file_size = os.path.getsize(self.file_path)
-        except Exception:
-            return None, None
-
-        return file_size, self._format_file_size(file_size)
-
-    def _format_file_size(self, file_size: int) -> Optional[str]:
-        """Format file size to a human-readable string."""
-        try:
-            units = ["B", "KB", "MB", "GB", "TB"]
-            size = float(file_size)
-            idx = 0
-            while size >= 1024 and idx < len(units) - 1:
-                size /= 1024.0
-                idx += 1
-            return f"{size:.2f}{units[idx]}" if idx > 0 else f"{int(size)}{units[idx]}"
-        except Exception:
-            return None
-
-    def _get_pe_metadata(self, exe_format: Any) -> tuple[Optional[str], Optional[bool], Optional[str]]:
-        """Extract PE-specific metadata if the binary is PE format."""
-        subsys = None
-        signed = None
-        compiled = None
-
-        if not exe_format or "PE" not in str(exe_format).upper():
-            return subsys, signed, compiled
-
-        try:
-            from java.io import File
-            from ghidra.app.util.bin import RandomAccessByteProvider
-            from ghidra.app.util.bin.format.pe import PortableExecutable
-
-            # Use RandomAccessByteProvider(File, permissions)
-            provider = RandomAccessByteProvider(File(self.file_path), "r")
-            try:
-                # Pass SectionLayout.FILE to indicate parsing from file on disk
-                pe = PortableExecutable(provider, PortableExecutable.SectionLayout.FILE)
-                nt = pe.getNTHeader()
-                if nt is None:
-                    return subsys, signed, compiled
-
-                file_header = nt.getFileHeader()
-                optional_header = nt.getOptionalHeader()
-
-                if file_header is not None:
-                    ts = file_header.getTimeDateStamp()
-                    if ts:
-                        compiled = datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
-
-                if optional_header is None:
-                    return subsys, signed, compiled
-
-                subsys = self._map_pe_subsystem(optional_header.getSubsystem())
-                signed = self._is_pe_signed(optional_header)
-                return subsys, signed, compiled
-            finally:
-                try:
-                    provider.close()
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.warning(f"Error parsing PE headers: {e}")
-            return subsys, signed, compiled
-
-    def _map_pe_subsystem(self, subsys_val: Any) -> str:
-        """Map PE subsystem value to human-readable string."""
-        SUBSYSTEM_MAP = {
-            1: "Native", 2: "Windows GUI", 3: "Windows CUI",
-            5: "OS/2 CUI", 7: "POSIX CUI", 9: "Windows CE GUI",
-            10: "EFI App", 11: "EFI Boot Service Driver",
-            12: "EFI Runtime Driver", 13: "EFI ROM",
-            14: "XBOX", 16: "Windows Boot App"
-        }
-        return SUBSYSTEM_MAP.get(subsys_val, str(subsys_val))
-
-    def _is_pe_signed(self, optional_header: Any) -> Optional[bool]:
-        """Check PE security directory for signature presence."""
-        data_dirs = optional_header.getDataDirectories()
-        if not data_dirs or len(data_dirs) <= 4:
-            return False
-        sec_dir = data_dirs[4]
-        try:
-            return (sec_dir.getSize() or 0) > 0
-        except Exception:
-            return False
-
-    def _build_info_payload(
-        self,
-        *,
-        lang: Any,
-        compiler_spec: Any,
-        exe_format: Any,
-        file_size: Optional[int],
-        human_size: Optional[str],
-        subsys: Optional[str],
-        signed: Optional[bool],
-        compiled: Optional[str],
-    ) -> Dict[str, Any]:
-        """Build frontend-compatible info payload."""
-        return {
-            "core": {
-                "file": os.path.basename(self.file_path),
-                "format": exe_format or "unknown",
-                "mode": str(lang.getLanguageDescription().getSize()) if lang else "unknown",
-                "type": "executable",
-                "size": file_size,
-                "humansz": human_size,
-            },
-            "bin": {
-                "arch": str(lang.getProcessor()) if lang else "unknown",
-                "bits": lang.getLanguageDescription().getSize() if lang else 0,
-                "machine": str(lang.getLanguageDescription().getProcessor()) if lang else "unknown",
-                "os": compiler_spec.getCompilerSpecID().getIdAsString() if compiler_spec else "unknown",
-                "endian": "little" if (lang and not lang.isBigEndian()) else ("big" if lang else "unknown"),
-                "compiler": compiler_spec.getCompilerSpecID().getIdAsString() if compiler_spec else "unknown",
-                "subsys": subsys,
-                "signed": signed,
-                "compiled": compiled,
-            }
-        }
-    
+    # ------------------------------------------------------------------
+    # Delegated services
+    # ------------------------------------------------------------------
     def get_decompiled_code(self, address_or_name: str) -> Optional[Dict[str, str]]:
-        """
-        Decompile a single function by name or address.
-        Returns dict with 'code' key, or None on failure.
-        """
-        if not self._program or not self._decompiler:
-            return None
-        
-        try:
-            func = self._find_function(address_or_name)
-            if not func:
-                return None
-            
-            monitor = _ConsoleTaskMonitor()
-            results = self._decompiler.decompileFunction(func, 60, monitor)
-            
-            if results and results.decompileCompleted():
-                decomp_func = results.getDecompiledFunction()
-                if decomp_func:
-                    return {"code": decomp_func.getC()}
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"Error decompiling {address_or_name}: {e}")
-            return None
-    
+        """Decompile one function. Returns {address, code} or None."""
+        return _decompile_svc.decompile_one(self._program, self._decompiler, address_or_name)
+
     def get_decompiled_code_batch(self, addresses: List[str]) -> List[Dict[str, str]]:
-        """
-        Batch decompile multiple functions.
-        Returns list of dicts with 'address' and 'code' keys.
-        """
-        if not self._program or not self._decompiler:
-            return []
-        
-        results = []
-        monitor = _ConsoleTaskMonitor()
-        
-        for addr in addresses:
-            try:
-                func = self._find_function(addr)
-                if not func:
-                    continue
-                
-                decomp_results = self._decompiler.decompileFunction(func, 60, monitor)
-                
-                if decomp_results and decomp_results.decompileCompleted():
-                    decomp_func = decomp_results.getDecompiledFunction()
-                    if decomp_func:
-                        code = decomp_func.getC()
-                        if code:
-                            results.append({
-                                "address": addr,
-                                "code": code
-                            })
-                            
-            except Exception as e:
-                logger.warning(f"Error decompiling {addr}: {e}")
-                continue
-        
-        logger.info(f"Decompiled {len(results)}/{len(addresses)} functions")
-        return results
-    
+        """Batch decompile; failed items skipped. Returns [{address, code}, ...]."""
+        return _decompile_svc.decompile_batch(self._program, self._decompiler, addresses)
+
     def get_global_call_graph(self) -> Dict[str, Any]:
-        """
-        Generate global call graph.
-        Returns dict with 'nodes' and 'edges' lists.
-        """
-        if not self._program:
-            return {}
-        
-        try:
-            func_manager = self._program.getFunctionManager()
-            ref_manager = self._program.getReferenceManager()
-            
-            nodes = []
-            edges = []
-            func_map = {}  # name -> node index
-            
-            # First pass: collect all functions as nodes
-            for idx, func in enumerate(self._iter_functions(func_manager)):
-                name = func.getName()
-                nodes.append({
-                    "id": idx,
-                    "name": name,
-                    "offset": func.getEntryPoint().getOffset() if func.getEntryPoint() else 0
-                })
-                func_map[name] = idx
-            
-            # Second pass: find call references to build edges
-            for func in self._iter_functions(func_manager):
-                caller_name = func.getName()
-                if caller_name not in func_map:
-                    continue
-                
-                # Get all references from this function's body
-                body = func.getBody()
-                if not body:
-                    continue
-                
-                # Iterate through the function body looking for call references
-                called_funcs = set()
-                for ref in self._iter_call_references_from_body(body, ref_manager):
-                    to_addr = ref.getToAddress()
-                    callee = func_manager.getFunctionAt(to_addr)
-                    if callee:
-                        called_funcs.add(callee.getName())
-                
-                for callee_name in called_funcs:
-                    if callee_name in func_map:
-                        edges.append({
-                            "from": func_map[caller_name],
-                            "to": func_map[callee_name]
-                        })
-            
-            logger.info(f"Call graph: {len(nodes)} nodes, {len(edges)} edges")
-            return {"nodes": nodes, "edges": edges}
-            
-        except Exception as e:
-            logger.error(f"Error generating call graph: {e}")
-            return {}
+        """Build {nodes, edges} for the whole program."""
+        return _callgraph_svc.build_call_graph(self._program)
 
     def get_function_xrefs(self, address_or_name: str) -> Optional[Dict[str, Any]]:
-        """
-        Get cross-references (callers and callees) for a single function.
-        Returns dict with: name, offset, callers, callees.
-        Each caller/callee is {name, offset}.
-        """
-        if not self._program:
-            return None
-
-        try:
-            func = self._find_function(address_or_name)
-            if not func:
-                return None
-
-            func_manager = self._program.getFunctionManager()
-            ref_manager = self._program.getReferenceManager()
-
-            func_name = func.getName()
-            func_entry = func.getEntryPoint()
-            func_offset = func_entry.getOffset() if func_entry else 0
-
-            # Get callees: functions this function calls
-            callees = self._get_callees(func, func_manager, ref_manager)
-
-            # Get callers: functions that call this function
-            callers = self._get_callers(func, func_manager, ref_manager)
-
-            return {
-                "name": func_name,
-                "offset": func_offset,
-                "callers": callers,
-                "callees": callees,
-            }
-
-        except Exception as e:
-            logger.error(f"Error getting xrefs for {address_or_name}: {e}")
-            return None
+        """Get {name, offset, callers, callees} for one function."""
+        return _xref_svc.get_xrefs(self._program, address_or_name)
 
     def get_function_xrefs_batch(self, addresses: List[str]) -> List[Dict[str, Any]]:
-        """
-        Batch get cross-references for multiple functions.
-        Input: list of function names or addresses (mixed).
-        Returns: list of {name, offset, callers, callees} dicts.
-        """
-        if not self._program:
-            return []
+        """Batch get xrefs; failed items skipped."""
+        return _xref_svc.get_xrefs_batch(self._program, addresses)
 
-        results = []
-        for addr in addresses:
-            try:
-                xref = self.get_function_xrefs(addr)
-                if xref:
-                    results.append(xref)
-            except Exception as e:
-                logger.warning(f"Error getting xrefs for {addr}: {e}")
-                continue
-
-        logger.info(f"Got xrefs for {len(results)}/{len(addresses)} functions")
-        return results
-
-    def _get_callees(self, func: Any, func_manager: Any, ref_manager: Any) -> List[Dict[str, Any]]:
-        """Get list of functions called by the given function."""
-        callees = []
-        seen = set()
-
-        body = func.getBody()
-        if not body:
-            return callees
-
-        for ref in self._iter_call_references_from_body(body, ref_manager):
-            to_addr = ref.getToAddress()
-            callee = func_manager.getFunctionAt(to_addr)
-            if callee:
-                callee_name = callee.getName()
-                if callee_name not in seen:
-                    seen.add(callee_name)
-                    callee_entry = callee.getEntryPoint()
-                    callees.append({
-                        "name": callee_name,
-                        "offset": callee_entry.getOffset() if callee_entry else 0,
-                    })
-
-        return callees
-
-    def _get_callers(self, func: Any, func_manager: Any, ref_manager: Any) -> List[Dict[str, Any]]:
-        """Get list of functions that call the given function."""
-        callers = []
-        seen = set()
-
-        func_entry = func.getEntryPoint()
-        if not func_entry:
-            return callers
-
-        # Get references TO this function's entry point
-        refs_to = ref_manager.getReferencesTo(func_entry)
-        for ref in refs_to:
-            # Some bindings may yield Address objects; handle both Reference and Address.
-            if hasattr(ref, "getReferenceType"):
-                if not ref.getReferenceType().isCall():
-                    continue
-                from_addr = ref.getFromAddress()
-            else:
-                from_addr = ref
-                found = False
-                try:
-                    refs_from = ref_manager.getReferencesFrom(from_addr)
-                except Exception:
-                    refs_from = []
-                for ref_from in refs_from:
-                    try:
-                        if ref_from.getReferenceType().isCall() and ref_from.getToAddress() == func_entry:
-                            from_addr = ref_from.getFromAddress()
-                            found = True
-                            break
-                    except Exception:
-                        continue
-                if not found:
-                    continue
-
-            caller = func_manager.getFunctionContaining(from_addr)
-            if caller:
-                caller_name = caller.getName()
-                if caller_name not in seen:
-                    seen.add(caller_name)
-                    caller_entry = caller.getEntryPoint()
-                    callers.append({
-                        "name": caller_name,
-                        "offset": caller_entry.getOffset() if caller_entry else 0,
-                    })
-
-        return callers
-    
-    def _find_function(self, address_or_name: str) -> Optional[Any]:
-        """
-        Find a function by name or address string.
-        """
-        if not self._program:
-            return None
-        
-        func_manager = self._program.getFunctionManager()
-        
-        # Try to parse as hex address first
-        addr_val = self._parse_address_value(address_or_name)
-        if addr_val is not None:
-            addr_factory = self._program.getAddressFactory()
-            addr = addr_factory.getDefaultAddressSpace().getAddress(addr_val)
-            func = func_manager.getFunctionAt(addr)
-            if func:
-                return func
-            # Also try containing function
-            func = func_manager.getFunctionContaining(addr)
-            if func:
-                return func
-
-        # Try to find by name (case-insensitive fallback)
-        for func in self._iter_functions(func_manager):
-            func_name = func.getName()
-            if func_name == address_or_name:
-                return func
-            if func_name and func_name.lower() == str(address_or_name).lower():
-                return func
-        
-        return None
-
-    def _iter_call_references_from_body(self, body: Any, ref_manager: Any):
-        """Yield call-type references originating from a function body.
-
-        Note: ReferenceManager.getReferenceSourceIterator may yield Address objects,
-        so we must resolve References via getReferencesFrom(address).
-        """
-        if not body:
-            return []
-
-        try:
-            ref_iter = ref_manager.getReferenceSourceIterator(body, True)
-        except Exception:
-            return []
-
-        def _generator():
-            for from_addr in ref_iter:
-                try:
-                    refs_from = ref_manager.getReferencesFrom(from_addr)
-                except Exception:
-                    continue
-                for ref in refs_from:
-                    try:
-                        if ref.getReferenceType().isCall():
-                            yield ref
-                    except Exception:
-                        continue
-
-        return _generator()
-    
+    # ------------------------------------------------------------------
+    # Lifecycle cleanup
+    # ------------------------------------------------------------------
     def close(self):
+        """Release all resources.
+
+        Refactor note: each resource is released in its own try/finally so a
+        failure in one step does not skip the others. Previously a single try
+        wrapped everything, so a closeProgram() exception leaked the pyghidra
+        context and the temp project directory.
         """
-        Close the analyzer and release resources.
-        """
-        try:
-            if self._decompiler:
+        if self._decompiler is not None:
+            try:
                 self._decompiler.closeProgram()
+            except Exception as e:
+                logger.warning(f"Error closing decompiler: {e}")
+            try:
                 self._decompiler.dispose()
-                self._decompiler = None
-            
-            if self._ctx:
-                # Exit the context manager properly
-                try:
-                    self._ctx.__exit__(None, None, None)
-                except Exception:
-                    pass
-                self._ctx = None
-                self._flat_api = None
-            
-            self._program = None
-            
-            # Cleanup temp project directory
-            if self._project_dir and os.path.exists(self._project_dir):
-                import shutil
-                try:
-                    shutil.rmtree(self._project_dir)
-                except Exception:
-                    pass
-                self._project_dir = None
-            
-            logger.info("GhidraAnalyzer closed")
-            
-        except Exception as e:
-            logger.error(f"Error closing analyzer: {e}")
+            except Exception as e:
+                logger.warning(f"Error disposing decompiler: {e}")
+            self._decompiler = None
 
-    # -----------------------------
-    # Internal helpers (refactor)
-    # -----------------------------
-    def _iter_functions(self, func_manager: Any):
-        """Yield functions in a consistent order.
+        if self._ctx is not None:
+            try:
+                self._ctx.__exit__(None, None, None)
+            except Exception as e:
+                logger.warning(f"Error exiting pyghidra context: {e}")
+            self._ctx = None
+            self._flat_api = None
 
-        Refactor note: centralizes the iteration pattern for readability.
-        """
-        return func_manager.getFunctions(True)  # Forward iteration
+        self._program = None
 
-    def _get_data_type_name(self, data: Any) -> str:
-        """Safely get data type name in lowercase."""
-        data_type = data.getDataType()
-        return data_type.getName().lower() if data_type else ""
+        if self._project_dir and os.path.exists(self._project_dir):
+            try:
+                shutil.rmtree(self._project_dir)
+            except Exception as e:
+                logger.warning(f"Error removing temp project dir: {e}")
+            self._project_dir = None
 
-    def _is_string_type(self, type_name: str) -> bool:
-        """Check whether a data type name looks like a string."""
-        return "string" in type_name or "unicode" in type_name
+        logger.info("GhidraAnalyzer closed")
 
-    def _safe_string_value(self, data: Any) -> str:
-        """Safely extract a string value from data.
-
-        Refactor note: isolates error handling to reduce nesting in callers.
-        """
-        try:
-            value = data.getValue()
-            if value is None:
-                return ""
-            return str(value) or ""
-        except Exception:
-            return ""
-
-    def _get_symbol_name_at(self, symbol_table: Any, addr: Any) -> str:
-        """Get a best-effort symbol name at an address."""
-        try:
-            primary = symbol_table.getPrimarySymbol(addr)
-            if primary:
-                primary_name = primary.getName()
-                if primary_name:
-                    return str(primary_name)
-        except Exception:
-            pass
-
-        try:
-            symbols = symbol_table.getSymbols(addr)
-            for sym in symbols:
-                name = sym.getName()
-                if name:
-                    return str(name)
-        except Exception:
-            pass
-
-        try:
-            return str(addr)
-        except Exception:
-            return ""
-
-    def _parse_address_value(self, address_or_name: str) -> Optional[int]:
-        """Parse a string into an address value if possible."""
-        try:
-            if address_or_name.startswith("0x"):
-                return int(address_or_name, 16)
-            if address_or_name.startswith("FUN_"):
-                return int(address_or_name[4:], 16)
-            if address_or_name.startswith("thunk_FUN_"):
-                return int(address_or_name[10:], 16)
-            if address_or_name.startswith("fcn."):
-                # Rizin-style auto-named function (fcn.00401000)
-                return int(address_or_name[4:], 16)
-        except (ValueError, Exception):
-            # Refactor note: keep parsing errors local and return None to fall back.
-            return None
-        return None
-    
     def __enter__(self):
         self.open()
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
+
+
+# ------------------------------------------------------------------
+# Module-level listing helpers (pure functions on Ghidra Java objects)
+# Refactor note: kept at module scope so they are not recreated per instance.
+# ------------------------------------------------------------------
+def _get_symbol_name_at(symbol_table: Any, addr: Any) -> str:
+    """Best-effort symbol name at an address (primary -> any -> str(addr))."""
+    try:
+        primary = symbol_table.getPrimarySymbol(addr)
+        if primary:
+            primary_name = primary.getName()
+            if primary_name:
+                return str(primary_name)
+    except Exception:
+        pass
+
+    try:
+        symbols = symbol_table.getSymbols(addr)
+        for sym in symbols:
+            name = sym.getName()
+            if name:
+                return str(name)
+    except Exception:
+        pass
+
+    try:
+        return str(addr)
+    except Exception:
+        return ""
+
+
+def _get_data_type_name(data: Any) -> str:
+    """Safely get data type name in lowercase."""
+    data_type = data.getDataType()
+    return data_type.getName().lower() if data_type else ""
+
+
+def _is_string_type(type_name: str) -> bool:
+    return "string" in type_name or "unicode" in type_name
+
+
+def _safe_string_value(data: Any) -> str:
+    """Safely extract a string value from defined data.
+
+    Refactor note: isolates error handling to reduce nesting in callers.
+    """
+    try:
+        value = data.getValue()
+        if value is None:
+            return ""
+        return str(value) or ""
+    except Exception:
+        return ""
+
+
+def _build_info_payload(
+    *,
+    file_path: str,
+    lang: Any,
+    compiler_spec: Any,
+    exe_format: Any,
+    file_size: Optional[int],
+    human_size: Optional[str],
+    subsys: Optional[str],
+    signed: Optional[bool],
+    compiled: Optional[str],
+) -> Dict[str, Any]:
+    """Build the frontend-compatible metadata payload."""
+    return {
+        "core": {
+            "file": os.path.basename(file_path),
+            "format": exe_format or "unknown",
+            "mode": str(lang.getLanguageDescription().getSize()) if lang else "unknown",
+            "type": "executable",
+            "size": file_size,
+            "humansz": human_size,
+        },
+        "bin": {
+            "arch": str(lang.getProcessor()) if lang else "unknown",
+            "bits": lang.getLanguageDescription().getSize() if lang else 0,
+            "machine": str(lang.getLanguageDescription().getProcessor()) if lang else "unknown",
+            "os": _derive_os(exe_format),
+            "endian": "little" if (lang and not lang.isBigEndian()) else ("big" if lang else "unknown"),
+            "compiler": compiler_spec.getCompilerSpecID().getIdAsString() if compiler_spec else "unknown",
+            "subsys": subsys,
+            "signed": signed,
+            "compiled": compiled,
+        },
+    }

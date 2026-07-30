@@ -27,6 +27,7 @@ class AnalysisTask(Base):
     error_message = Column(Text, nullable=True)  # If failed
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    # Refactor note: added server_default so updated_at is not NULL on insert.
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     finished_at = Column(DateTime(timezone=True), nullable=True)
 

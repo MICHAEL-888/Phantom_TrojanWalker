@@ -35,10 +35,22 @@
   - `load_config()`: 加载 `agents/config.yaml`，并支持通过环境变量覆盖部分配置。
 - `config.yaml` / `config.yaml.example`
   - Ghidra 插件 base_url 与 endpoints 映射；两类 Agent 的模型、key、prompt 路径、并发等。
+- `agent_core.py`
+  - `BaseAgent`：共享基类（config DI、重试、截断、调试日志、deepagent HarnessProfile 注册）。
+  - `FunctionAnalysisAgent`：对单个函数反编译文本做结构化分析（`create_deep_agent` + Pydantic `response_format`）。
+  - `MalwareAnalysisAgent`：汇总关键函数分析 + metadata，通过 **deepagent** (`create_deep_agent`) + MCP 工具生成最终报告。
+- `schemas.py`
+  - `FunctionAnalysisResult` / `MalwareReport`：Pydantic 模型，作为 `response_format` 保证结构化输出（替代手动 `repair_json`）。
+- `llm_factory.py`
+  - `create_llm()`：共享 `ChatOpenAI` 构造逻辑（API key 校验、限流、参数过滤）。
+- `langfuse_utils.py`
+  - Langfuse callback 创建 + 调试 packet 日志。
+- `mcp_loader.py`
+  - `load_mcp_tools()`：从 ghidra_mcp 服务加载 MCP 工具。
 - `exceptions.py`
-  - `GhidraBackendError`, `LLMResponseError` 等异常类型。
+  - `GhidraBackendError`, `LLMResponseError`, `ConfigurationError` 等异常类型。
 - `main.py`
-  - FastAPI 聚合服务（**更像 legacy/实验入口**）。生产/容器编排通常以 `backend` 为主入口。
+  - FastAPI 聚合服务（**legacy/实验入口**）。生产/容器编排以 `backend` 为主入口。
 
 ---
 
@@ -56,12 +68,13 @@
 5. **函数列表**：`GhidraClient.get_functions()`（来自 FunctionManager）并整理为 `functions_data`
 5.5 **导出表**：`GhidraClient.get_exports()`（GET `/exports`，每项固定 `{name, offset}`）
 6. **字符串**：`GhidraClient.get_strings()`（来自 Listing DefinedData）
-7. **全局调用图**：`GhidraClient.get_callgraph()`（来自 ReferenceManager）
-7.5 **函数交叉引用**：`GhidraClient.get_function_xrefs_batch(func_names)`（POST `/xrefs_batch`）
+7. **函数交叉引用**：`GhidraClient.get_function_xrefs_batch(func_names)`（POST `/xrefs_batch`）
 8. **批量反编译**：`GhidraClient.get_decompiled_codes_batch(func_names)`（POST `/decompile_batch`）
 9. **函数级 AI 分析**：`FunctionAnalysisAgent.analyze_decompiled_batch(target_funcs)`
 9.5 **筛选关键函数**：仅保留 `attack_matches` 非空的函数交给最终报告（ATT&CK 聚焦降噪）
 10. **最终报告**：`MalwareAnalysisAgent.analyze(analysis_results=key_functions, metadata=metadata)`
+
+> 注：旧流水线第 7 步的 `get_callgraph()` 调用已被移除（结果此前被丢弃，属浪费的 HTTP 请求）。
 
 最终返回（供 backend 落库）字段：
 - `metadata`
@@ -106,20 +119,40 @@
 
 ---
 
-## 5. LLM Agents（严格 JSON 输出）
+## 5. LLM Agents（deepagent + Pydantic 结构化输出）
 
-### 5.1 输出必须为 JSON object
-两类 Agent 都在 `ChatOpenAI` 的 `model_kwargs` 设置：
-- `{"response_format": {"type": "json_object"}}`
+### 5.1 结构化输出（Pydantic response_format）
+两类 Agent 均使用 `deepagents.create_deep_agent` + Pydantic 模型作为 `response_format`，由框架保证输出可解析（替代旧版 `repair_json` + 手动重试；FunctionAnalysisAgent 旧版的 `ChatOpenAI.with_structured_output` 也已退役）：
+- `FunctionAnalysisAgent`：`create_deep_agent(model, tools=[], response_format=FunctionAnalysisResult)`，无工具、单步终止；agent 图在 `__init__` 构建一次，跨 batch 与并发调用复用。
+- `MalwareAnalysisAgent`：`create_deep_agent(model, tools=<MCP>, response_format=MalwareReport)`，内置 `SummarizationMiddleware`（自动上下文压缩）。
+
+### 5.2 deepagent 内置提示词/工具剥离（重要）
+`create_deep_agent` 默认会注入一组与恶意软件分析无关的内容：
+- `BASE_AGENT_PROMPT`（"You are a deep agent..." 通用提示词）
+- `TodoListMiddleware` → `write_todos` 工具
+- `FilesystemMiddleware` → `ls`/`read_file`/`write_file`/`edit_file`/`delete`/`glob`/`grep`/`execute` 工具
+- `SubAgentMiddleware` → `task` 工具 + 自动 general-purpose 子代理
+
+其中 `FilesystemMiddleware` 与 `SubAgentMiddleware` 是 **hard-required scaffolding**，无法通过 `excluded_middleware` 排除。两类 Agent 共用 `BaseAgent._register_analysis_profile()` 通过以下三层组合完全中和这些干扰：
+
+1. **HarnessProfile 注册**（`BaseAgent._register_analysis_profile()`，构造时执行一次；profile key 跨子类共享，避免 FAA/MAA 互相重复注册）：
+   - `excluded_tools` 隐藏所有内置工具名（`write_todos`/`ls`/`read_file`/`write_file`/`edit_file`/`delete`/`glob`/`grep`/`execute`）
+   - `excluded_middleware={"TodoListMiddleware"}` 移除 TodoList 中间件
+   - `general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)` 禁用自动 GP 子代理
+   - 注册 key：`openai:<model_name>` 与 `openai`（`ChatOpenAI` 的 `ls_provider` 为 `openai`）
+2. **`base_system_prompt=""` on HarnessProfile + `system_prompt` 直传字符串**（调用 `create_deep_agent` 时）：通过 HarnessProfile 的 `base_system_prompt=""` 让 `_apply_profile_prompt` 把 `BASE_AGENT_PROMPT` 替换为空字符串，再把领域 system prompt 作为 `str` 直接传给 `system_prompt`，只保留我们的领域提示词（deepagents >=0.6 已移除 `SystemPromptConfig`，等价于旧 `SystemPromptConfig(base=None)`）。
+3. **`subagents=[]`**：显式传空列表，配合 GP 禁用确保 `SubAgentMiddleware` 不被添加、`task` 工具不存在。
+
+最终模型只看到：领域 system prompt + `response_format=<PydanticModel>`（MAA 另有 MCP 验证工具），两类 Agent 的干净程度一致。
 
 解析策略：
-- **单次** `FunctionAnalysisAgent.analyze()`：解析失败会抛 `LLMResponseError`（强失败）。
-- **批量** `FunctionAnalysisAgent.analyze_decompiled_batch()`：逐项解析，解析失败不会整体抛错，而是返回包含 `error/raw_response` 的 payload（便于最终报告过滤/落库）。
-- `MalwareAnalysisAgent.analyze()`：解析失败会抛 `LLMResponseError`。
+- **批量** `FunctionAnalysisAgent.analyze_decompiled_batch()`：并发（`asyncio.gather`）在同一个 agent 图上调用，单函数失败返回 `error` payload，不中断整批。
+- `MalwareAnalysisAgent.analyze()`：调用失败（网络/限流）重试，结构化输出由 `response_format` 保证，不再需要 JSON 解析重试。
 
-### 5.2 并发与截断
-- 批量分析：`FunctionAnalysisAgent.analyze_decompiled_batch()` 逐个函数顺序调用 LLM。
-- 输入截断：`_truncate_code_for_context()` 会依据 `llm.max_input_tokens` 做保守截断，避免超上下文。
+### 5.3 并发与截断
+- 批量分析：`FunctionAnalysisAgent.analyze_decompiled_batch()` 使用 `asyncio.gather` **并发**调用 LLM（非顺序）。
+- 输入截断：`_truncate_code_for_context()` 依据 `llm.max_input_tokens` 做保守截断。
+- 依赖注入：两类 Agent 构造函数接收 `AppConfig`（与 `GhidraClient` 一致），`config.yaml` 仅在 `factory.py` / `main.py` 加载一次。
 
 ---
 
@@ -137,6 +170,10 @@
 ### 6.2 环境变量覆盖
 `config_loader.load_config()` 支持：
 - `PTW_GHIDRA_BASE_URL`：覆盖 `plugins.ghidra.base_url`（Docker/生产常用）。
+- `PTW_MCP_BASE_URL`：覆盖 `plugins.mcp.base_url`。
+- `PTW_LLM_API_KEY`：覆盖两类 Agent 的 `llm.api_key`（避免 secret 入库）。
+- `PTW_FUNCTIONANALYSISAGENT_API_KEY` / `PTW_MALWAREANALYSISAGENT_API_KEY`：按 Agent 单独覆盖 key。
+- `PTW_FUNCTIONANALYSISAGENT_MODEL` / `PTW_MALWAREANALYSISAGENT_MODEL`：按 Agent 覆盖模型名。
 
 ---
 

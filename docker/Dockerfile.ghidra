@@ -4,15 +4,19 @@ FROM blacktop/ghidra:12 AS base
 
 USER root
 
-# Install Python and build dependencies
-# Switch Ubuntu ports mirror to improve availability in some networks
-RUN if [ -f /etc/apt/sources.list ]; then \
+# Refactor note: the hardcoded Tsinghua mirror rewrite is now opt-in via
+# USE_CN_MIRROR=1. Default (0) keeps the original Ubuntu mirrors for
+# portability outside China.
+ARG USE_CN_MIRROR=0
+RUN if [ "$USE_CN_MIRROR" = "1" ]; then \
+        if [ -f /etc/apt/sources.list ]; then \
             sed -i 's|http://ports.ubuntu.com/ubuntu-ports|https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports|g' /etc/apt/sources.list; \
-        fi \
-        && if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+        fi; \
+        if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
             sed -i 's|http://ports.ubuntu.com/ubuntu-ports|https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports|g' /etc/apt/sources.list.d/ubuntu.sources; \
-        fi \
-        && apt-get update && apt-get install -y --no-install-recommends \
+        fi; \
+    fi \
+    && apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
     python3-venv \

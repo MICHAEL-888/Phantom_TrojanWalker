@@ -98,18 +98,30 @@ const server = http.createServer((req, res) => {
     // Static file serve
     let filePath = safeResolve(pathname);
 
-    // SPA fallback
+    // Refactor note: SPA fallback only for non-asset routes. Previously a
+    // missing .js/.css request would return index.html with text/html
+    // content-type, causing the browser to silently parse HTML as JS/CSS.
+    const hasExtension = path.extname(pathname) !== '';
     if (!filePath || !fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+      if (hasExtension) {
+        return send(res, 404, 'Not Found');
+      }
       filePath = path.join(DIST_DIR, 'index.html');
     }
 
+    const isIndexHtml = path.basename(filePath) === 'index.html';
     const stream = fs.createReadStream(filePath);
     stream.on('error', (err) => send(res, 500, `Server error: ${err.message}`));
 
-    res.writeHead(200, {
-      'Content-Type': contentTypeFor(filePath),
-      // Let assets be cached a bit; index.html falls back to no-store via send(), but here we keep it simple.
-    });
+    const headers = { 'Content-Type': contentTypeFor(filePath) };
+    // Refactor note: index.html should never be cached; hashed assets can be
+    // cached long-term (content-addressed by Vite).
+    if (isIndexHtml) {
+      headers['Cache-Control'] = 'no-store';
+    } else {
+      headers['Cache-Control'] = 'public, max-age=31536000, immutable';
+    }
+    res.writeHead(200, headers);
     stream.pipe(res);
   } catch (err) {
     send(res, 500, `Server error: ${err?.message || String(err)}`);

@@ -95,7 +95,9 @@ def _load_yaml_config(config_path: str) -> AppConfig:
 def _apply_env_overrides(config: AppConfig) -> None:
     """Apply environment variable overrides.
 
-    Refactor note: use a guard clause to reduce nesting.
+    Refactor note: use a guard clause to reduce nesting. Env overrides let
+    deployments (especially Docker) inject secrets without touching config.yaml,
+    so API keys never need to be committed.
     """
     ghidra_base_url = os.getenv("PTW_GHIDRA_BASE_URL")
     if ghidra_base_url and "ghidra" in config.plugins:
@@ -104,6 +106,23 @@ def _apply_env_overrides(config: AppConfig) -> None:
     mcp_base_url = os.getenv("PTW_MCP_BASE_URL")
     if mcp_base_url and "mcp" in config.plugins:
         config.plugins["mcp"].base_url = mcp_base_url
+
+    # Refactor note: a single shared key env applies to both agents; per-agent
+    # overrides are also supported for mixed-provider setups.
+    shared_api_key = os.getenv("PTW_LLM_API_KEY")
+    for agent_name in ("FunctionAnalysisAgent", "MalwareAnalysisAgent"):
+        agent_cfg = getattr(config, agent_name, None)
+        if agent_cfg is None:
+            continue
+        per_agent_key = os.getenv(f"PTW_{agent_name.upper()}_API_KEY")
+        if per_agent_key:
+            agent_cfg.llm.api_key = per_agent_key
+        elif shared_api_key:
+            agent_cfg.llm.api_key = shared_api_key
+
+        per_agent_model = os.getenv(f"PTW_{agent_name.upper()}_MODEL")
+        if per_agent_model:
+            agent_cfg.llm.model_name = per_agent_model
 
 
 def _load_agent_prompts(config: AppConfig, config_path: str) -> None:

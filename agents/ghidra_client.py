@@ -76,8 +76,16 @@ class GhidraClient:
         """Build a request URL from an endpoint key.
 
         Refactor note: isolate URL construction to reduce duplication and errors.
+        Unknown keys now log a warning instead of silently falling back, so
+        config.yaml / config.yaml.example drift is visible.
         """
-        path = self.endpoints.get(endpoint_key, f"/{endpoint_key}")
+        path = self.endpoints.get(endpoint_key)
+        if path is None:
+            logger.warning(
+                "Endpoint key '%s' missing from config.yaml; falling back to /%s",
+                endpoint_key, endpoint_key,
+            )
+            path = f"/{endpoint_key}"
         return f"{self.base_url}{path}"
 
     def _safe_json_or_text(self, response: httpx.Response) -> Any:
@@ -157,17 +165,6 @@ class GhidraClient:
         # Batch decompilation can be very time-consuming with Ghidra
         res = await self._request("POST", "decompile_batch", json=addresses, timeout=3600.0)
         return self._coerce_list(res)
-
-    async def get_function_xrefs(self, address_or_name: str) -> Optional[Dict[str, Any]]:
-        """
-        Get cross-references for a single function.
-        Returns: {name, offset, callers, callees} or None if not found.
-        """
-        try:
-            res = await self._request("GET", "xrefs", params={"addr": address_or_name}, timeout=60.0)
-            return self._coerce_dict(res) if res else None
-        except Exception:
-            return None
 
     async def get_function_xrefs_batch(self, addresses: List[str]) -> List[Dict[str, Any]]:
         """

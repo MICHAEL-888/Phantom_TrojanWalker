@@ -1,4 +1,4 @@
-FROM debian:latest
+FROM debian:12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
