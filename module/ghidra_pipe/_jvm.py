@@ -21,8 +21,10 @@ def ensure_ghidra_started() -> None:
     if _ghidra_started:
         return
 
-    import pyghidra
-    pyghidra.start()
+    from pyghidra.launcher import HeadlessPyGhidraLauncher
+    launcher = HeadlessPyGhidraLauncher()
+    launcher.add_vmargs("-Xmx1g", "-Xms512m", "-XX:+UseG1GC")
+    launcher.start()
 
     from ghidra.app.decompiler import DecompInterface, DecompileOptions
     from ghidra.util.task import ConsoleTaskMonitor

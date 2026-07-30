@@ -354,6 +354,10 @@ class AnalysisCoordinator:
             analysis_results=key_function_analyses, metadata=metadata,
         )
 
+    async def _step_close(self) -> None:
+        logger.info("Step 11: Closing Ghidra analyzer to release memory...")
+        await self.ghidra.close_analyzer()
+
     # ------------------------------------------------------------------
     # Public entry points
     # ------------------------------------------------------------------
@@ -399,6 +403,8 @@ class AnalysisCoordinator:
         )
 
         final_malware_report = await self._step_malware_report(key_function_analyses, metadata)
+
+        await self._step_close()
 
         logger.info("Analysis complete for file: %s", filename)
         return {

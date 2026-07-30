@@ -175,6 +175,11 @@ class GhidraClient:
         res = await self._request("POST", "xrefs_batch", json=addresses, timeout=3600.0)
         return self._coerce_list(res)
 
+    async def close_analyzer(self) -> Dict[str, Any]:
+        """Close the current Ghidra analyzer, releasing program resources."""
+        res = await self._request("POST", "close", timeout=30.0)
+        return self._coerce_dict(res)
+
     def _coerce_dict(self, value: Any) -> Dict[str, Any]:
         """Normalize unknown response payload to dict.
 

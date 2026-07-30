@@ -315,6 +315,12 @@ class GhidraAnalyzer:
                 logger.warning(f"Error removing temp project dir: {e}")
             self._project_dir = None
 
+        try:
+            import java.lang
+            java.lang.System.gc()
+        except Exception:
+            pass
+
         logger.info("GhidraAnalyzer closed")
 
     def __enter__(self):
