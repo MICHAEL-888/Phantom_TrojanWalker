@@ -15,6 +15,7 @@ plugins:
       decompile_batch: "/decompile_batch"
       xrefs: "/xrefs"
       xrefs_batch: "/xrefs_batch"
+      close: "/close"
   mcp:
     base_url: "http://ph_ghidra:9000/mcp"
     endpoints: {}
@@ -58,6 +59,6 @@ MalwareAnalysisAgent:
     max_bucket_size: 10
   tool_budget:
     enabled: true
-    max_tool_calls: 12
-    max_agent_steps: 30
+    max_tool_calls: 60
+    max_agent_steps: 100
     max_tool_result_chars: 120000

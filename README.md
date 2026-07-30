@@ -347,3 +347,7 @@ MalwareAnalysisAgent尽可能使用先进的模型，该agent涉及到工具调�
 
 - [基于大模型的病毒木马文件云鉴定](https://mp.weixin.qq.com/s/G6LyMtzMxtwk5uAMo44euQ)
 - [二进制安全新风向：AI大语言模型协助未知威胁检测与逆向分析](https://www.huorong.cn/document/info/classroom/1887)
+
+## 题外话
+
+我是27届本科毕业生，想找一份自动化样本分析的工作，有意可联系邮箱：i_michael@qq.com
