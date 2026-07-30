@@ -79,13 +79,27 @@ def _ensure_runtime_indexes() -> None:
         )
 
 
+_LEGACY_COLUMNS = ["functions", "strings", "decompiled_code", "function_xrefs", "function_analyses"]
+
+
+def _drop_legacy_columns() -> None:
+    """Drop columns removed from the model."""
+    for col in _LEGACY_COLUMNS:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE analysis_tasks DROP COLUMN {col}"))
+        except Exception:
+            pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: create tables, indexes, upload dir, and start worker.
+    # Startup: create tables, indexes, drop legacy columns, create upload dir, and start worker.
     # Refactor note: moved from import time into lifespan so importing
     # backend.main does not mutate the filesystem.
     Base.metadata.create_all(bind=engine)
     _ensure_runtime_indexes()
+    _drop_legacy_columns()
     endpoints.ensure_upload_dir()
     await worker.start()
     yield

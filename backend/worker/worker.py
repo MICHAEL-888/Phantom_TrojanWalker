@@ -157,11 +157,6 @@ class AnalysisWorker:
             task.status = STATUS_COMPLETED
 
             task.metadata_info = result.get("metadata")
-            task.functions = result.get("functions")
-            task.strings = result.get("strings")
-            task.decompiled_code = result.get("decompiled_code")
-            task.function_xrefs = result.get("function_xrefs")
-            task.function_analyses = result.get("function_analyses")
             task.malware_report = result.get("malware_report")
 
             # Refactor note: use timezone-aware UTC to match created_at's

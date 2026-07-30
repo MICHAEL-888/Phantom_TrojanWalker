@@ -4,11 +4,11 @@ import axios from 'axios';
 // and History.jsx. Centralized here so all pages share one source of truth.
 export const API_BASE = '/api';
 
-export const getTaskStatus = (taskId, { includeHeavy = false } = {}) =>
-  axios.get(`${API_BASE}/tasks/${taskId}`, { params: { include_heavy: includeHeavy } });
+export const getTaskStatus = (taskId, options = {}) =>
+  axios.get(`${API_BASE}/tasks/${taskId}`, options);
 
-export const getResultByHash = (sha256, { includeHeavy = false } = {}) =>
-  axios.get(`${API_BASE}/result/${sha256}`, { params: { include_heavy: includeHeavy } });
+export const getResultByHash = (sha256, options = {}) =>
+  axios.get(`${API_BASE}/result/${sha256}`, options);
 
 export const uploadAnalyze = (formData) =>
   axios.post(`${API_BASE}/analyze`, formData, {

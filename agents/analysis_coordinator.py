@@ -403,10 +403,5 @@ class AnalysisCoordinator:
         logger.info("Analysis complete for file: %s", filename)
         return {
             "metadata": metadata,
-            "functions": functions_data,
-            "strings": strings_data,
-            "decompiled_code": decompiled_codes,
-            "function_xrefs": function_xrefs,
-            "function_analyses": function_analysis_results,
             "malware_report": final_malware_report,
         }

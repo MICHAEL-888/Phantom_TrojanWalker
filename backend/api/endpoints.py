@@ -159,12 +159,8 @@ def _dedup_or_persist_and_create_task(
         raise
 
 
-def _task_summary_payload(task: AnalysisTask, include_heavy: bool = True) -> dict:
-    """Build response payload for task summary endpoints.
-
-    include_heavy=False omits large JSON columns to speed up detail polling.
-    """
-    payload = {
+def _task_summary_payload(task: AnalysisTask) -> dict:
+    return {
         "task_id": task.task_id,
         "status": task.status,
         "sha256": task.sha256,
@@ -175,38 +171,6 @@ def _task_summary_payload(task: AnalysisTask, include_heavy: bool = True) -> dic
         "created_at": task.created_at,
         "finished_at": task.finished_at,
     }
-    if include_heavy:
-        payload.update(
-            {
-                "functions": task.functions,
-                "strings": task.strings,
-                "decompiled_code": task.decompiled_code,
-                "function_xrefs": task.function_xrefs,
-                "function_analyses": task.function_analyses,
-            }
-        )
-    return payload
-
-
-def _task_query(db: Session, include_heavy: bool):
-    """Build a task query that can skip heavy JSON columns when unnecessary."""
-    query = db.query(AnalysisTask)
-    if include_heavy:
-        return query
-
-    return query.options(
-        load_only(
-            AnalysisTask.task_id,
-            AnalysisTask.status,
-            AnalysisTask.sha256,
-            AnalysisTask.filename,
-            AnalysisTask.metadata_info,
-            AnalysisTask.malware_report,
-            AnalysisTask.error_message,
-            AnalysisTask.created_at,
-            AnalysisTask.finished_at,
-        )
-    )
 
 
 def _history_entry_payload(task: AnalysisTask) -> dict:
@@ -274,24 +238,22 @@ async def analyze_file(
 @router.get("/tasks/{task_id}")
 def get_task_status(
     task_id: str,
-    include_heavy: bool = False,
     db: Session = Depends(get_db),
 ):
-    task = _task_query(db, include_heavy=include_heavy).filter(AnalysisTask.task_id == task_id).first()
+    task = db.query(AnalysisTask).filter(AnalysisTask.task_id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    return _task_summary_payload(task, include_heavy=include_heavy)
+    return _task_summary_payload(task)
 
 
 @router.get("/result/{sha256}")
 def get_result_by_hash(
     sha256: str,
-    include_heavy: bool = False,
     db: Session = Depends(get_db),
 ):
     task = (
-        _task_query(db, include_heavy=include_heavy)
+        db.query(AnalysisTask)
         .filter(AnalysisTask.sha256 == sha256)
         .order_by(desc(AnalysisTask.created_at))
         .first()
@@ -299,8 +261,7 @@ def get_result_by_hash(
     if not task:
         raise HTTPException(status_code=404, detail="Analysis not found")
 
-    payload = _task_summary_payload(task, include_heavy=include_heavy)
-    # Keep legacy behavior: omit timestamps in hash lookup response.
+    payload = _task_summary_payload(task)
     payload.pop("created_at", None)
     payload.pop("finished_at", None)
     return payload
