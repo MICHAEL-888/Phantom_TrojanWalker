@@ -53,7 +53,7 @@ RUN mkdir -p /app/data/uploads /app/data/projects
 EXPOSE 8000
 EXPOSE 9000
 
-# Run the FastAPI service and the MCP server
-# Keep ghidra_pipe in foreground so forced stop can terminate container process,
-# allowing compose restart policy to recover service automatically.
-CMD ["bash", "-lc", "python module/ghidra_mcp/main.py & python module/ghidra_pipe/main.py"]
+# Run the FastAPI service and the MCP server under a signal-forwarding wrapper.
+COPY docker/start-ghidra.sh /app/start-ghidra.sh
+RUN chmod +x /app/start-ghidra.sh
+CMD ["/app/start-ghidra.sh"]

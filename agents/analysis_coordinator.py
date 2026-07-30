@@ -356,7 +356,11 @@ class AnalysisCoordinator:
 
     async def _step_close(self) -> None:
         logger.info("Step 11: Closing Ghidra analyzer to release memory...")
-        await self.ghidra.close_analyzer()
+        try:
+            await self.ghidra.close_analyzer()
+        except Exception:
+            # Cleanup must not hide the failure that caused the pipeline to stop.
+            logger.error("Failed to close Ghidra analyzer", exc_info=True)
 
     # ------------------------------------------------------------------
     # Public entry points
@@ -368,6 +372,15 @@ class AnalysisCoordinator:
         return await self.analyze_content(filename, content, file.content_type)
 
     async def analyze_content(
+        self, filename: str, content: bytes, content_type: str = "application/octet-stream",
+    ) -> Dict[str, Any]:
+        """Run analysis and always release the current Ghidra program."""
+        try:
+            return await self._analyze_content(filename, content, content_type)
+        finally:
+            await self._step_close()
+
+    async def _analyze_content(
         self, filename: str, content: bytes, content_type: str = "application/octet-stream",
     ) -> Dict[str, Any]:
         """Run the full analysis pipeline.
@@ -403,8 +416,6 @@ class AnalysisCoordinator:
         )
 
         final_malware_report = await self._step_malware_report(key_function_analyses, metadata)
-
-        await self._step_close()
 
         logger.info("Analysis complete for file: %s", filename)
         return {

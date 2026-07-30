@@ -16,6 +16,7 @@ services:
       - ./data:/app/data
     environment:
       - GHIDRA_INSTALL_DIR=/ghidra
+      - GHIDRA_RESTART_AFTER_CLOSE=1
       - GHIDRA_MCP_PORT=9000
       - GHIDRA_PIPE_BASE_URL=http://localhost:8000
       - GHIDRA_MCP_ALLOW_ORIGINS=*

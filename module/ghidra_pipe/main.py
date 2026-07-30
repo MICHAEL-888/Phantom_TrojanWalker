@@ -119,6 +119,63 @@ def _close_analyzer() -> None:
         analyzer = None
 
 
+def _read_proc_memory() -> dict:
+    """Read current process memory counters without adding a runtime dependency."""
+    result = {}
+    try:
+        with open("/proc/self/status", "r", encoding="ascii") as status_file:
+            for line in status_file:
+                key, separator, value = line.partition(":")
+                if separator and key in {"VmRSS", "VmSize", "Threads"}:
+                    parts = value.strip().split()
+                    if parts:
+                        result[key] = int(parts[0]) * (1024 if len(parts) > 1 and parts[1] == "kB" else 1)
+    except (OSError, ValueError):
+        pass
+    return result
+
+
+def _read_cgroup_value(path: str):
+    """Read a cgroup v2 value when available."""
+    try:
+        with open(path, "r", encoding="ascii") as value_file:
+            value = value_file.read().strip()
+        return value if value == "max" else int(value)
+    except (OSError, ValueError):
+        return None
+
+
+def _memory_snapshot() -> dict:
+    """Return process, cgroup, and JVM memory counters for troubleshooting."""
+    snapshot = {
+        "process": _read_proc_memory(),
+        "cgroup": {
+            "current_bytes": _read_cgroup_value("/sys/fs/cgroup/memory.current"),
+            "limit_bytes": _read_cgroup_value("/sys/fs/cgroup/memory.max"),
+        },
+        "jvm": None,
+    }
+
+    try:
+        import java.lang.management
+
+        memory = java.lang.management.ManagementFactory.getMemoryMXBean()
+        heap = memory.getHeapMemoryUsage()
+        non_heap = memory.getNonHeapMemoryUsage()
+        snapshot["jvm"] = {
+            "heap_used_bytes": heap.getUsed(),
+            "heap_committed_bytes": heap.getCommitted(),
+            "heap_max_bytes": heap.getMax(),
+            "non_heap_used_bytes": non_heap.getUsed(),
+            "non_heap_committed_bytes": non_heap.getCommitted(),
+        }
+    except Exception:
+        # JVM is not started before the first upload, or management access is unavailable.
+        pass
+
+    return snapshot
+
+
 def _force_terminate_process(delay_seconds: float = 0.2) -> None:
     """Terminate current process to hard-stop any ongoing Ghidra work."""
     time.sleep(max(delay_seconds, 0.0))
@@ -131,10 +188,27 @@ def _force_terminate_process(delay_seconds: float = 0.2) -> None:
         os._exit(1)
 
 
+def _restart_after_close(delay_seconds: float = 0.2) -> None:
+    """Exit after cleanup so compose replaces the JVM with a fresh process."""
+    time.sleep(max(delay_seconds, 0.0))
+    pid = os.getpid()
+    logger.warning("Restarting ghidra_pipe after close (pid=%s)", pid)
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except Exception:
+        os._exit(1)
+
+
 @app.get("/health_check")
 def health_check():
     """Health check endpoint."""
     return {"status": "ok"}
+
+
+@app.get("/memory")
+def memory_snapshot():
+    """Expose process/cgroup/JVM memory counters for operational diagnostics."""
+    return _memory_snapshot()
 
 
 @app.post("/upload")
@@ -163,9 +237,16 @@ async def upload(file: UploadFile = File(...)):
 @app.post("/close")
 def close_analyzer():
     """Explicitly release Ghidra resources for the current binary."""
+    global analyzer
     with analyzer_lock:
+        had_analyzer = analyzer is not None
         _close_analyzer()
-    return {"status": "closed"}
+    restart_scheduled = (
+        had_analyzer and os.getenv("GHIDRA_RESTART_AFTER_CLOSE", "0").lower() in {"1", "true", "yes"}
+    )
+    if restart_scheduled:
+        threading.Thread(target=_restart_after_close, daemon=True).start()
+    return {"status": "closed", "restart_scheduled": restart_scheduled}
 
 
 @app.post("/stop_analysis")
