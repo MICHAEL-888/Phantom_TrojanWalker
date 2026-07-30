@@ -20,6 +20,29 @@ logger = logging.getLogger(__name__)
 SDK_MAX_RETRIES = 0
 
 
+class AutoToolChoiceChatOpenAI(ChatOpenAI):
+    """Keep thinking models compatible with LangChain structured tools."""
+
+    def bind_tools(
+        self,
+        tools: Any,
+        *,
+        tool_choice: Any = None,
+        strict: Optional[bool] = None,
+        parallel_tool_calls: Optional[bool] = None,
+        response_format: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        return super().bind_tools(
+            tools,
+            tool_choice="auto",
+            strict=strict,
+            parallel_tool_calls=parallel_tool_calls,
+            response_format=response_format,
+            **kwargs,
+        )
+
+
 def validate_api_key(agent_label: str, api_key: Optional[str]) -> None:
     """Validate LLM API key presence.
 
@@ -78,9 +101,15 @@ def build_llm_params(
     return {k: v for k, v in params.items() if v is not None}
 
 
-def create_llm(agent_name: str, agent_cfg: Any) -> ChatOpenAI:
+def create_llm(
+    agent_name: str,
+    agent_cfg: Any,
+    *,
+    force_tool_choice_auto: bool = False,
+) -> ChatOpenAI:
     """Create a ChatOpenAI client with shared initialization logic."""
     validate_api_key(agent_name, agent_cfg.llm.api_key)
     rate_limiter = build_rate_limiter(agent_cfg.rate_limit)
     llm_params = build_llm_params(agent_name, agent_cfg, rate_limiter)
-    return ChatOpenAI(**llm_params)
+    llm_class = AutoToolChoiceChatOpenAI if force_tool_choice_auto else ChatOpenAI
+    return llm_class(**llm_params)

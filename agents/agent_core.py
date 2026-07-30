@@ -359,8 +359,16 @@ class MalwareAnalysisAgent(BaseAgent):
     def __init__(self, config: AppConfig):
         super().__init__(config, "MalwareAnalysisAgent")
         validate_api_key("MalwareAnalysisAgent", self.agent_config.llm.api_key)
-        self._llm = create_llm("MalwareAnalysisAgent", self.agent_config)
-        self._summary_llm = create_llm("MalwareAnalysisAgentSummary", self.agent_config)
+        self._llm = create_llm(
+            "MalwareAnalysisAgent",
+            self.agent_config,
+            force_tool_choice_auto=True,
+        )
+        self._summary_llm = create_llm(
+            "MalwareAnalysisAgentSummary",
+            self.agent_config,
+            force_tool_choice_auto=True,
+        )
         self.mcp_base_url = self._resolve_mcp_base_url()
         self._register_analysis_profile()
 
