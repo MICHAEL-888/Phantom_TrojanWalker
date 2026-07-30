@@ -10,7 +10,7 @@ class LLMConfig(BaseModel):
     api_key: str
     temperature: Optional[float] = None
     base_url: Optional[str] = None
-    max_retries: Optional[int] = None
+    max_attempts: Optional[int] = None
     timeout: Optional[float] = None
     streaming: Optional[bool] = True
     max_completion_tokens: Optional[int] = None

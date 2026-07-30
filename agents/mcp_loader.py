@@ -13,9 +13,9 @@ logger = logging.getLogger(__name__)
 async def load_mcp_tools(mcp_base_url: Optional[str]) -> List[Any]:
     """Load MCP tools from the configured ghidra_mcp service URL.
 
-    Returns an empty list if no URL is configured or if loading fails (the
-    agent can still operate without tools, producing a report from the initial
-    function analyses alone).
+    Returns an empty list if no URL is configured. Loading failures propagate
+    so the caller can apply its retry policy instead of silently dropping the
+    forensic tools.
     """
     if not mcp_base_url:
         return []
@@ -30,10 +30,6 @@ async def load_mcp_tools(mcp_base_url: Optional[str]) -> List[Any]:
             }
         }
     )
-    try:
-        tools = await client.get_tools()
-        logger.info("Loaded %d MCP tools from %s", len(tools), mcp_base_url)
-        return tools
-    except Exception as exc:
-        logger.warning("MCP get_tools failed: %s", exc)
-        return []
+    tools = await client.get_tools()
+    logger.info("Loaded %d MCP tools from %s", len(tools), mcp_base_url)
+    return tools

@@ -21,7 +21,10 @@ hand-rolled SummarizationMiddleware + ToolBudgetMiddleware to deepagent.
 import asyncio
 import json
 import logging
+import random
 from typing import Any, Dict, List, Optional, Tuple
+
+from pydantic import BaseModel, ValidationError
 
 from config_loader import AppConfig
 from exceptions import LLMResponseError
@@ -43,7 +46,7 @@ class BaseAgent:
     """Shared base: config DI, retry resolution, truncation, debug logging,
     deepagent HarnessProfile registration.
 
-    Refactor note: consolidates _resolve_json_retry_attempts, _invoke_config,
+    Refactor note: consolidates _resolve_max_attempts, _invoke_config,
     and _packet_log which were duplicated across both agents. The deepagent
     HarnessProfile registration (formerly on MalwareAnalysisAgent only) is
     lifted here so FunctionAnalysisAgent shares the same built-in tool/prompt
@@ -62,14 +65,14 @@ class BaseAgent:
         self.agent_name = agent_name
         self.agent_config = getattr(config, agent_name)
         self._langfuse_callback = create_langfuse_callback_handler()
-        self._json_retry_attempts = self._resolve_json_retry_attempts()
+        self._max_attempts = self._resolve_max_attempts()
         self._packet_debug_enabled = is_phantom_debug_enabled()
         self._packet_logger = get_debug_logger() if self._packet_debug_enabled else None
 
-    def _resolve_json_retry_attempts(self) -> int:
-        max_retries = getattr(self.agent_config.llm, "max_retries", None)
-        if isinstance(max_retries, int) and max_retries > 0:
-            return max_retries
+    def _resolve_max_attempts(self) -> int:
+        max_attempts = getattr(self.agent_config.llm, "max_attempts", None)
+        if isinstance(max_attempts, int) and max_attempts > 0:
+            return max_attempts
         return 3
 
     def _invoke_config(self, run_name: str) -> Optional[Dict[str, Any]]:
@@ -95,8 +98,50 @@ class BaseAgent:
         return code
 
     def _retry_delay(self, attempt: int) -> float:
-        # Simple bounded backoff to avoid hammering the provider.
-        return float(min(2 * attempt, 10))
+        # Bounded exponential backoff with jitter avoids synchronized retries.
+        base_delay = min(2 ** (attempt - 1), 10)
+        return float(base_delay * random.uniform(0.75, 1.25))
+
+    async def _wait_before_retry(self, attempt: int) -> None:
+        if attempt < self._max_attempts:
+            await asyncio.sleep(self._retry_delay(attempt))
+
+    def _is_retryable_exception(self, exc: Exception) -> bool:
+        """Return whether an exception is likely to be transient."""
+        status_code = getattr(exc, "status_code", None)
+        if status_code is None:
+            response = getattr(exc, "response", None)
+            status_code = getattr(response, "status_code", None)
+        if isinstance(status_code, int):
+            return status_code in {408, 429} or status_code >= 500
+
+        if isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError)):
+            return True
+
+        message = str(exc).lower()
+        transient_markers = (
+            "timeout", "timed out", "connection reset", "connection refused",
+            "temporarily unavailable", "temporary failure", "rate limit",
+            "too many requests", "service unavailable", "bad gateway",
+            "gateway timeout", "server disconnected",
+        )
+        return any(marker in message for marker in transient_markers)
+
+    def _validated_structured_response(
+        self, value: Any, schema: type[BaseModel]
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        if value is None:
+            return None, "No structured_response from agent."
+        try:
+            if isinstance(value, schema):
+                model = value
+            elif isinstance(value, dict):
+                model = schema.model_validate(value)
+            else:
+                return None, f"Unexpected structured_response type: {type(value).__name__}"
+            return model.model_dump(), None
+        except ValidationError as exc:
+            return None, f"Invalid structured_response: {exc}"
 
     def _register_analysis_profile(self) -> None:
         """Register a HarnessProfile that strips deepagent's built-in tools,
@@ -161,8 +206,8 @@ class FunctionAnalysisAgent(BaseAgent):
     and across concurrent per-function invocations (LangGraph compiled graphs
     are stateless across ainvoke calls with fresh message inputs). Per-function
     failures are captured as error payloads so the batch is never aborted.
-    Structured output is guaranteed by response_format; only network /
-    rate-limit failures trigger the per-function error path.
+    Structured output is validated locally; transient provider failures and
+    invalid structured responses are retried per function.
     """
 
     def __init__(self, config: AppConfig):
@@ -227,38 +272,45 @@ class FunctionAnalysisAgent(BaseAgent):
                 invoke_config.update(base_config)
 
             self._packet_log("function_agent.request", {"name": name, "code_len": len(code)})
-            try:
-                result = await self._agent.ainvoke(
-                    {"messages": messages},
-                    config=invoke_config,
-                )
-            except Exception as exc:
-                logger.warning("FunctionAnalysisAgent LLM call failed for %s: %s", name, exc)
-                return {
-                    "error": str(exc),
-                    "agent": self.agent_name,
-                    "raw_response": "",
-                }
-
-            structured = result.get("structured_response")
-            if isinstance(structured, FunctionAnalysisResult):
-                return structured.model_dump()
-            # Refactor note: defensive fallback for unexpected return types.
-            if isinstance(structured, dict):
-                return structured
-
-            # Refactor note: fallback — extract last message content if
-            # structured_response is missing (rare with response_format set).
-            result_msgs = result.get("messages") or []
+            last_error = ""
             last_content = ""
-            if result_msgs:
-                last_content = getattr(result_msgs[-1], "content", str(result_msgs[-1]))
-            logger.warning(
-                "FunctionAnalysisAgent no structured_response for %s",
-                name,
-            )
+            for attempt in range(1, self._max_attempts + 1):
+                try:
+                    result = await self._agent.ainvoke(
+                        {"messages": messages},
+                        config=invoke_config,
+                    )
+                except Exception as exc:
+                    last_error = str(exc)
+                    logger.warning(
+                        "FunctionAnalysisAgent call failed for %s (attempt %d/%d): %s",
+                        name, attempt, self._max_attempts, exc,
+                    )
+                    if not self._is_retryable_exception(exc):
+                        break
+                    await self._wait_before_retry(attempt)
+                    continue
+
+                structured_value = result.get("structured_response") if isinstance(result, dict) else None
+                structured, validation_error = self._validated_structured_response(
+                    structured_value, FunctionAnalysisResult,
+                )
+                if structured is not None:
+                    return structured
+
+                result_msgs = result.get("messages") if isinstance(result, dict) else []
+                result_msgs = result_msgs or []
+                if result_msgs:
+                    last_content = getattr(result_msgs[-1], "content", str(result_msgs[-1]))
+                last_error = validation_error or "Invalid structured response."
+                logger.warning(
+                    "FunctionAnalysisAgent structured output invalid for %s (attempt %d/%d): %s",
+                    name, attempt, self._max_attempts, last_error,
+                )
+                await self._wait_before_retry(attempt)
+
             return {
-                "error": "No structured_response from agent.",
+                "error": last_error or "Function analysis failed.",
                 "agent": self.agent_name,
                 "raw_response": last_content,
             }
@@ -266,6 +318,13 @@ class FunctionAnalysisAgent(BaseAgent):
         analyses = await asyncio.gather(
             *[_analyze_one(name, code) for name, code in prepared]
         )
+
+        failed_count = sum(1 for analysis in analyses if "error" in analysis)
+        if failed_count:
+            logger.warning(
+                "FunctionAnalysisAgent batch incomplete: %d/%d functions failed",
+                failed_count, len(analyses),
+            )
 
         return [
             {"name": name, "analysis": analysis}
@@ -279,8 +338,8 @@ class MalwareAnalysisAgent(BaseAgent):
     Refactor note: create_deep_agent replaces the hand-rolled 146-line
     _invoke_with_summarization_middleware + ToolBudgetMiddleware inner class.
     Built-in SummarizationMiddleware handles context compaction; response_format
-    handles structured output; recursion_limit bounds tool calls. The 125-line
-    retry loop is simplified to error-only retries (no JSON parse retries).
+    handles structured output; recursion_limit bounds tool calls. Retry handling
+    covers transient provider failures and invalid structured output.
 
     deepagent strips: create_deep_agent forces a bundled BASE_AGENT_PROMPT,
     TodoListMiddleware (write_todos), FilesystemMiddleware (ls/read_file/
@@ -342,7 +401,7 @@ class MalwareAnalysisAgent(BaseAgent):
 
         tools: List[Any] = []
         if tool_enabled and self.mcp_base_url:
-            tools = await load_mcp_tools(self.mcp_base_url)
+            tools = await self._load_mcp_tools_with_retry()
             logger.info(
                 "MalwareAnalysisAgent: tools=%d, max_tool_calls=%d, max_agent_steps=%d",
                 len(tools), max_tool_calls, max_agent_steps,
@@ -375,12 +434,13 @@ class MalwareAnalysisAgent(BaseAgent):
             invoke_config.update(base_config)
 
         last_content = ""
-        for attempt in range(1, self._json_retry_attempts + 1):
+        last_error = ""
+        for attempt in range(1, self._max_attempts + 1):
             self._packet_log(
                 "malware_agent.request",
                 {
                     "attempt": attempt,
-                    "max_attempts": self._json_retry_attempts,
+                    "max_attempts": self._max_attempts,
                     "tool_count": len(tools),
                     "max_agent_steps": max_agent_steps,
                 },
@@ -389,30 +449,55 @@ class MalwareAnalysisAgent(BaseAgent):
                 result = await agent.ainvoke({"messages": messages}, config=invoke_config)
             except Exception as exc:
                 last_content = str(exc)
+                last_error = str(exc)
                 logger.warning(
                     "MalwareAnalysisAgent call failed (attempt %d/%d): %s",
-                    attempt, self._json_retry_attempts, exc,
+                    attempt, self._max_attempts, exc,
                 )
-                await asyncio.sleep(self._retry_delay(attempt))
+                if not self._is_retryable_exception(exc):
+                    break
+                await self._wait_before_retry(attempt)
                 continue
 
-            structured = result.get("structured_response")
-            if isinstance(structured, MalwareReport):
-                self._packet_log("malware_agent.response", {"structured": structured.model_dump()})
-                return structured.model_dump()
+            structured_value = result.get("structured_response") if isinstance(result, dict) else None
+            structured, validation_error = self._validated_structured_response(
+                structured_value, MalwareReport,
+            )
+            if structured is not None:
+                self._packet_log("malware_agent.response", {"structured": structured})
+                return structured
 
-            # Refactor note: fallback — extract last message content if
-            # structured_response is missing (rare with response_format set).
-            result_msgs = result.get("messages") or []
+            result_msgs = result.get("messages") if isinstance(result, dict) else []
+            result_msgs = result_msgs or []
             if result_msgs:
                 last_content = getattr(result_msgs[-1], "content", str(result_msgs[-1]))
+            last_error = validation_error or "Invalid structured response."
             logger.warning(
-                "MalwareAnalysisAgent no structured_response (attempt %d/%d)",
-                attempt, self._json_retry_attempts,
+                "MalwareAnalysisAgent structured output invalid (attempt %d/%d): %s",
+                attempt, self._max_attempts, last_error,
             )
-            await asyncio.sleep(self._retry_delay(attempt))
+            await self._wait_before_retry(attempt)
 
         raise LLMResponseError(
-            "Failed to get structured response from MalwareAnalysisAgent",
+            last_error or "Failed to get structured response from MalwareAnalysisAgent",
             raw_response=last_content,
+        )
+
+    async def _load_mcp_tools_with_retry(self) -> List[Any]:
+        last_error: Optional[Exception] = None
+        for attempt in range(1, self._max_attempts + 1):
+            try:
+                return await load_mcp_tools(self.mcp_base_url)
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "MalwareAnalysisAgent MCP tool loading failed (attempt %d/%d): %s",
+                    attempt, self._max_attempts, exc,
+                )
+                if not self._is_retryable_exception(exc):
+                    break
+                await self._wait_before_retry(attempt)
+        raise LLMResponseError(
+            "Failed to load MalwareAnalysisAgent MCP tools",
+            raw_response=str(last_error) if last_error else None,
         )

@@ -164,7 +164,7 @@
 - `plugins.ghidra.endpoints`：key->path
 - `FunctionAnalysisAgent` 与 `MalwareAnalysisAgent`：
   - `system_prompt_path`：prompt 文件路径（相对 `agents/`）
-  - `llm.*`：`model_name/base_url/api_key/timeout/max_retries/max_completion_tokens/max_input_tokens/extra_body` 等
+  - `llm.*`：`model_name/base_url/api_key/timeout/max_attempts/max_completion_tokens/max_input_tokens/extra_body` 等
   - `rate_limit.*`：速率限制参数
 
 ### 6.2 环境变量覆盖

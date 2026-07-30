@@ -140,17 +140,9 @@ cp config.yaml.example config.yaml
 
 完整模板见 `agents/config.yaml.example`。
 
-### 2. LLM API Key（两种方式）
+### 2. LLM API Key
 
-**方式 A：写入 config.yaml（简单，但注意不要提交到 git）**
-
-```yaml
-FunctionAnalysisAgent:
-  llm:
-    api_key: "sk-..."
-```
-
-**方式 B：环境变量注入（推荐，secret 不入库）**
+**使用环境变量注入（推荐，secret 不入库）**
 
 ```bash
 export PTW_LLM_API_KEY="sk-..."  # 两个 Agent 共用
@@ -160,6 +152,8 @@ export PTW_MALWAREANALYSISAGENT_API_KEY="sk-..."
 ```
 
 环境变量优先级高于 `config.yaml`。
+
+两个 Agent 的 `llm.max_attempts` 表示一次分析允许的最大总调用次数，包含首次调用；仅超时、连接失败、429 和 5xx 等瞬态错误会触发重试。
 
 ### 3. 模型选择建议
 
@@ -353,4 +347,3 @@ MalwareAnalysisAgent尽可能使用先进的模型，该agent涉及到工具调�
 
 - [基于大模型的病毒木马文件云鉴定](https://mp.weixin.qq.com/s/G6LyMtzMxtwk5uAMo44euQ)
 - [二进制安全新风向：AI大语言模型协助未知威胁检测与逆向分析](https://www.huorong.cn/document/info/classroom/1887)
-

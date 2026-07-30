@@ -28,7 +28,7 @@ FunctionAnalysisAgent:
     api_key: "YOUR_API_KEY_HERE"
     base_url: "https://api.deepseek.com/chat/completions"
     extra_body: {}
-    max_retries: 3
+    max_attempts: 3
     timeout: 120
     streaming: true
     max_completion_tokens: 32768
@@ -47,7 +47,7 @@ MalwareAnalysisAgent:
     api_key: "YOUR_API_KEY_HERE"
     base_url: "https://api.deepseek.com/chat/completions"
     extra_body: {}
-    max_retries: 3
+    max_attempts: 3
     timeout: 600
     streaming: true
     max_completion_tokens: 32768
