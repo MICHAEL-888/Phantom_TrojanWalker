@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 # Global analyzer state (single instance — Ghidra/JVM is process-global).
 analyzer = None
 analyzer_lock = threading.RLock()
+restart_pending = False
 
 # Upload directory resolved from repo root.
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -201,8 +202,9 @@ def _restart_after_close(delay_seconds: float = 0.2) -> None:
 
 @app.get("/health_check")
 def health_check():
-    """Health check endpoint."""
-    return {"status": "ok"}
+    """Report whether Pipe can safely accept another analysis task."""
+    with analyzer_lock:
+        return {"status": "restarting" if restart_pending else "ok"}
 
 
 @app.get("/memory")
@@ -237,13 +239,17 @@ async def upload(file: UploadFile = File(...)):
 @app.post("/close")
 def close_analyzer():
     """Explicitly release Ghidra resources for the current binary."""
-    global analyzer
+    global analyzer, restart_pending
     with analyzer_lock:
         had_analyzer = analyzer is not None
         _close_analyzer()
-    restart_scheduled = (
-        had_analyzer and os.getenv("GHIDRA_RESTART_AFTER_CLOSE", "0").lower() in {"1", "true", "yes"}
-    )
+        restart_scheduled = (
+            had_analyzer
+            and os.getenv("GHIDRA_RESTART_AFTER_CLOSE", "0").lower() in {"1", "true", "yes"}
+        )
+        if restart_scheduled:
+            # Expose draining state before the delayed process termination runs.
+            restart_pending = True
     if restart_scheduled:
         threading.Thread(target=_restart_after_close, daemon=True).start()
     return {"status": "closed", "restart_scheduled": restart_scheduled}

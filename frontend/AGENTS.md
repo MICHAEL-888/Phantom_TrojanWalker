@@ -1,127 +1,64 @@
-# frontend/AGENTS.md
+# frontend
 
-本模块是 **前端 UI（React + Vite）**：负责样本上传、任务状态轮询、结果展示（元数据、LLM 报告等）。前端不直接访问 ghidra_pipe，也不直接访问 agents；所有数据都通过 `backend` 的 `/api/*` 获取。
+## 职责与边界
 
----
+此模块是 React/Vite 单页应用，提供样本上传、任务状态查看、历史记录和最终报告展示。所有请求都经相对路径 `/api` 到 backend；不得从浏览器直接访问 Ghidra Pipe、MCP 或 agents。
 
-## 1. 模块边界与职责
+页面路由：
 
-**本模块做什么**
-- 提供交互界面：选择文件、计算 sha256、提交分析、展示进度、展示报告。
-- 对接后端 API：`POST /api/analyze`、`GET /api/tasks/{task_id}`、`GET /api/result/{sha256}`。
-- 在开发态通过 Vite proxy 解决跨域，在生产态通过 `server.mjs` 进行同源反向代理。
+- `/`：`src/pages/Home.jsx`，选择或拖放样本、浏览器端 SHA-256 预查和上传。
+- `/task/:taskId`：`src/pages/TaskDetail.jsx`，查询并每 30 秒轮询任务状态。
+- `/history`：`src/pages/History.jsx`，历史列表与 SHA-256 查询。
 
-**本模块不做什么**
-- 不保存任务数据到 DB（由 backend 完成）。
-- 不做二进制分析/反编译（由 ghidra_pipe 完成）。
-- 不做 LLM 调用（由 agents 完成）。
+## 关键文件
 
----
+| 文件 | 作用 |
+| --- | --- |
+| `src/App.jsx` | 路由、固定导航和滚动行为 |
+| `src/lib/api.js` | Axios API client；`API_BASE` 必须保持为 `/api` |
+| `src/lib/utils.js` | SHA-256、上传表单和展示数据辅助函数 |
+| `src/pages/Home.jsx` | 样本选择、预查去重、上传和跳转 |
+| `src/pages/TaskDetail.jsx` | AbortController 管理的轮询和任务状态展示 |
+| `src/pages/History.jsx` | 最近任务和 hash 搜索 |
+| `src/components/ReportView.jsx` | metadata 与 `MalwareReport` 字段的渲染 |
+| `vite.config.js` | 开发和 preview 时将 `/api` 代理到 `http://localhost:8001` |
+| `server.mjs` | 容器生产静态服务和同源 `/api/*` 反向代理 |
 
-## 2. 目录与关键文件
+## API 数据流
 
-- `src/App.jsx`
-  - 上传/查询主逻辑：sha256 计算、任务创建/复用、轮询任务、状态管理。
-- `src/components/ReportView.jsx`
-  - 报告渲染：展示 `malware_report`（风险、链路、ATT&CK、IOCs 等），并对文本/代码高亮。
-- `vite.config.js`
-  - 开发/preview 代理：将 `/api` 转发到 `http://localhost:8001`。
-- `server.mjs`
-  - 生产静态服务器 + server-side proxy：将 `/api/*` 转发到 `PTW_BACKEND_BASE_URL`。
-- `public/runtime-config.js`
-  - 运行时配置占位（当前实现可能未实际读取；作为后续“无需重建即可切换 API base”的扩展点）。
+Home 使用 Web Crypto 计算 SHA-256，然后请求 `GET /api/result/{sha256}`。命中非 `failed` 任务时直接进入对应任务页；未命中或失败任务才上传。
 
----
+上传调用 `POST /api/analyze`，`FormData` 包含 `file` 和可选 `sha256`。后端会重新计算并验证 hash，因此不要把浏览器 hash 当成可信数据。
 
-## 3. 前端数据流（核心流程）
+TaskDetail 请求 `GET /api/tasks/{task_id}`：`pending` 与 `processing` 继续轮询，`completed` 传给 `ReportView`，`failed` 显示 `error`。History 调用 `GET /api/history?limit=50`，hash 搜索使用 `GET /api/result/{sha256}`。
 
-主要流程在 `src/App.jsx`。
+任务响应只包含 `metadata` 和 `malware_report` 两个分析结果字段。不要添加对函数、字符串、反编译内容或 `include_heavy` 的客户端依赖，它们不属于当前 backend API。
 
-### 3.1 上传前的 sha256 预计算与预查
-- 浏览器端优先使用 WebCrypto 计算 sha256（用于：1）上传时可带上 sha256；2）先走“按 hash 查结果”的快速路径）。
-- 预查：先请求 `GET /api/result/{sha256}`，若命中且任务状态不是 `failed`，直接复用展示。
-- 若未命中或命中但为 `failed`，则继续上传分析。
+## 报告契约
 
-接口返回约定（性能相关）：
-- `GET /api/result/{sha256}` 默认是轻量返回（不含大体积重字段）。
-- 若未来需要调试/高级视图，可通过查询参数 `include_heavy=true` 获取完整重字段。
+`ReportView` 消费：
 
-> 语义说明：后端去重会复用 `pending/processing/completed`，但通常不会复用 `failed`；前端这里的策略与后端契约保持一致。
+- `metadata.bin` 和 `metadata.core`
+- `malware_report.threat_type`、`risk_level`、`malware_name`、`attack_chain`、`reason`
+- `malware_report.key_ttps`、`malicious_functions`、`extracted_iocs`
 
-### 3.2 创建任务与轮询
-- 创建任务：`POST /api/analyze`（multipart form-data：`file` + 可选 `sha256`）。
-- 轮询：获取 `task_id` 后，每隔一段时间请求 `GET /api/tasks/{task_id}`。
-  - `pending/processing`：继续轮询
-  - `completed`：渲染结果
-  - `failed`：展示错误并允许重试
+报告字段源自 `agents/schemas.py` 与 prompt。变更报告显示时先同步它们，并确认安全短路报告的默认字段仍可正常显示。
 
-接口返回约定（性能相关）：
-- `GET /api/tasks/{task_id}` 默认轻量返回，已满足当前 `TaskDetail/ReportView` 的渲染需求（主要消费 `metadata` 与 `malware_report`）。
-- 仅在确实要展示函数级大字段时，再使用 `include_heavy=true`。
+## 运行与部署
 
-### 3.3 报告渲染
-`ReportView.jsx` 主要消费后端返回中的：
-- `malware_report`：LLM 汇总报告（字段依赖 prompt 约定）
-- `metadata`：二进制元信息
-- （可扩展）`functions/strings/decompiled_code/function_analyses`
+```bash
+npm --prefix frontend run dev
+npm --prefix frontend run build
+npm --prefix frontend run preview
+```
 
-建议把“报告字段 schema”视为可演进契约：修改 prompt/字段时需要同时更新渲染层。
+开发和 `vite preview` 使用 Vite proxy。生产镜像先运行 Vite build，再由 `server.mjs` 提供 `dist`；后端地址仅由服务端的 `PTW_BACKEND_BASE_URL` 使用，默认 `http://host.docker.internal:8001`。Compose 会将其设为 `http://ph_backend:8001`。
 
----
+`public/runtime-config.js` 当前不是运行中的 API 配置来源。不要基于它实现请求逻辑，保持 `/api` 同源模式。
 
-## 4. API 代理与部署形态
+## 修改规则
 
-### 4.1 开发态：Vite proxy
-定义在 `vite.config.js`：
-- 访问 `/api/*` -> 代理到 `http://localhost:8001`
-
-好处：
-- 浏览器同源请求，无需在 dev 环境处理 CORS。
-
-### 4.2 生产态：静态服务器 + server-side proxy
-`server.mjs` 行为：
-- 提供静态文件（dist）
-- 将 `/api/*` 服务器端转发到 `PTW_BACKEND_BASE_URL`（默认 `http://host.docker.internal:8001`）
-
-好处：
-- 浏览器永远只访问同源 `/api`，后端地址不暴露给浏览器。
-
----
-
-## 5. 依赖与技术栈
-
-- React + Vite
-- 网络：通常使用 axios（按实现）
-- UI/渲染：Tailwind、Markdown 渲染/代码高亮等
-
----
-
-## 6. 并发与性能注意事项
-
-- 系统级约束：后端 worker 单并发分析（由 rz_pipe 全局状态导致），因此任务可能排队较久。
-- 前端应把 `pending`/`processing` 明确区分并提示用户“排队/分析中”。
-- 大文件计算 sha256 可能耗时：可在 UI 上显示 hash 计算进度（当前实现若无进度条，可作为增强）。
-
----
-
-## 7. 扩展点与开发指引
-
-### 7.1 接入历史任务列表
-后端已有 `GET /api/history`，前端可新增页面或侧边栏展示最近任务。
-
-### 7.2 展示更细粒度分析结果
-- 字符串列表（`strings`）
-- 反编译列表（`decompiled_code`）
-- 函数级 AI 分析（`function_analyses`）
-
-### 7.3 运行时配置化 API Base（路线图）
-如果希望无需重建即可切换 API：
-- 可以让前端读取 `public/runtime-config.js` 注入的变量（例如 `window.__RUNTIME_CONFIG__`），再决定 API base。
-- 但当前生产态更推荐保持 `/api` 同源，并通过 `PTW_BACKEND_BASE_URL` 在服务器侧切换。
-
----
-
-## 8. 与其他模块的契约（速查）
-
-- 只调用 backend：`/api/analyze`、`/api/tasks/{task_id}`、`/api/result/{sha256}`、（可选）`/api/history`
-- 不直接访问 ghidra_pipe（:8000）与 agents（legacy :8002）
+- API 变更先更新 backend，再集中更新 `src/lib/api.js` 和各页面调用点。
+- 保留任务页的取消逻辑：卸载或切换任务时应中止未完成请求并清理 interval。
+- 浏览器 SHA-256 会将整个文件读入内存；后端的 200 MB 限制仍是权威限制。需要支持更大文件时应评估浏览器内存体验和后端配置。
+- 新增任务状态时同步后端常量、TaskDetail、History 的图标和 badge 映射。

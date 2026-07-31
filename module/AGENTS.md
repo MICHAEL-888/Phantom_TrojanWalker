@@ -1,191 +1,70 @@
-# module/AGENTS.md
+# module
 
-本模块目前包含 `ghidra_pipe/` 与 `ghidra_mcp/`：
-- `ghidra_pipe/`：**Ghidra 引擎 HTTP 服务**（FastAPI），封装 pyghidra 调用，为上层提供结构化的二进制分析数据、交叉引用与反编译结果。
-- `ghidra_mcp/`：**FastMCP 工具服务**（HTTP），对外暴露反编译与交叉引用工具，复用 ghidra_pipe 的当前 analyzer 状态。
+## 服务边界
 
-> 关键设计：服务端维护"当前打开的二进制"的全局状态，因此系统整体分析必须单并发执行（由 backend worker 强制）。
+`module/` 包含两个协作服务：
 
----
+- `ghidra_pipe/`：基于 pyghidra 的 FastAPI 静态分析服务，默认端口 `8000`。
+- `ghidra_mcp/`：将 Pipe 的单函数反编译和交叉引用包装为 FastMCP HTTP 工具，默认端口 `9000`，路径 `/mcp`。
 
-## 1. 模块边界与职责
+它们不负责样本去重、任务持久化、队列或 LLM 判断。浏览器不能直接调用这两个服务。
 
-**本模块做什么**
-- 启动一个 HTTP 服务（默认 :8000），暴露 `upload/analyze/metadata/functions/exports/strings/callgraph/xrefs/xrefs_batch/decompile_batch` 等接口。
-- 管理 pyghidra 生命周期：初始化 JVM、打开二进制、执行分析、返回 JSON。
-- 通过 Ghidra DecompInterface 提供反编译能力。
-- 启动一个 MCP 服务（默认 :9000），提供只读工具 `decompile_function` 与 `function_xrefs`。
+## 关键约束
 
-**本模块不做什么**
-- 不做任务排队/去重/落库（backend 负责）。
-- 不做 AI/LLM 分析（agents 负责）。
+`ghidra_pipe/main.py` 维护一个全局 `analyzer` 和 `threading.RLock`。`POST /upload` 会关闭旧 analyzer 并打开新样本，其他分析路由都依赖该当前状态。这只保证单进程的请求互斥，不提供多样本会话隔离。
 
----
+因此系统只能同时分析一个样本。该约束由 `backend/worker/worker.py` 的 `_analysis_lock` 维护，不能通过在客户端增加并发请求来规避。
 
-## 2. 目录与关键文件
+分析结束时 agents 会调用 `POST /close`。Compose 设置 `GHIDRA_RESTART_AFTER_CLOSE=1`，Pipe 会先将 `/health_check` 标为 `restarting`，再在释放资源后退出，以便容器以全新 JVM 重启；下一任务的 Ghidra client 会以有上限的指数退避等待恢复。修改该行为前须评估内存释放、健康检查和 worker 重试。
 
-- `ghidra_pipe/main.py`
-  - FastAPI 路由定义
-  - 全局变量：`analyzer`（当前打开的二进制）、`analyzer_lock`（RLock）
-  - 上传目录：`<repo_root>/data/uploads/`
-- `ghidra_pipe/analyzer.py`
-  - `GhidraAnalyzer`：pyghidra 生命周期 + listing（函数/导出/字符串）+ 元数据组装；
-    反编译/交叉引用/调用图委托给下列子模块。
-  - 关键功能映射：
-    - `get_info()`：元信息（format, arch, bits 等）
-    - `get_functions()`：函数列表
-    - `get_strings()`：字符串
-    - `get_global_call_graph()`：全局调用图（委托 `callgraph.py`）
-    - `get_decompiled_code_batch()`：批量反编译（委托 `decompile.py`，DecompInterface）
-    - `get_function_xrefs()` / `get_function_xrefs_batch()`：函数 callers/callees（委托 `xrefs.py`）
-- `ghidra_pipe/` 子模块（单一职责，由 `analyzer.py` 委托）：
-  - `_jvm.py`：JVM/pyghidra 一次性启动 + Java 类引用缓存
-  - `formatting.py`：文件大小格式化
-  - `pe_metadata.py`：PE 头解析（subsystem/signed/compiled）
-  - `addressing.py`：函数名/地址解析
-  - `decompile.py`：反编译服务（single/batch 共享 `_decompile_one`）
-  - `xrefs.py`：交叉引用服务（callers/callees/batch）
-  - `callgraph.py`：全局调用图构建（按 entry-address 索引，避免重名冲突）
-- `ghidra_mcp/main.py`
-  - FastMCP server，基于 `/decompile` 与 `/xrefs` 封装为 MCP 工具
-  - 运行地址默认 `http://localhost:9000/mcp`
+## Ghidra Pipe
 
----
+| 位置 | 作用 |
+| --- | --- |
+| `ghidra_pipe/main.py` | FastAPI 路由、上传、analyzer 生命周期、内存诊断和强制终止 |
+| `ghidra_pipe/analyzer.py` | `GhidraAnalyzer`、pyghidra 生命周期和高层分析方法 |
+| `_jvm.py` | JVM/Java 类初始化与缓存 |
+| `addressing.py` | 函数名和地址解析 |
+| `decompile.py` | 单函数与批量反编译 |
+| `xrefs.py` | callers/callees 查询和批量查询 |
+| `callgraph.py` | 以函数入口地址为标识构建调用图 |
+| `pe_metadata.py` | PE 专用元数据 |
+| `formatting.py` | 显示格式化辅助函数 |
 
-## 3. 全局状态模型（最重要的设计点）
+当前 HTTP 路由：
 
-`ghidra_pipe/main.py` 维持一个全局 `analyzer`：
-- `POST /upload` 会关闭旧 analyzer、打开新 analyzer。
-- 其余接口都依赖"当前 analyzer 已打开"。
+| 路由 | 行为 |
+| --- | --- |
+| `GET /health_check` | 服务健康状态 |
+| `GET /memory` | 进程、cgroup 和 JVM 内存快照 |
+| `POST /upload` | 流式保存样本并打开 analyzer |
+| `GET /analyze` | 执行 Ghidra `analyzeAll` |
+| `POST /stop_analysis` | 计划强制终止 Pipe 进程，用于超时恢复 |
+| `POST /close` | 关闭 analyzer；按环境变量决定是否重启进程 |
+| `GET /metadata`、`/functions`、`/exports`、`/strings`、`/callgraph` | 返回静态分析数据 |
+| `GET /decompile?addr=...` | 反编译单个函数 |
+| `POST /decompile_batch` | 反编译 JSON 字符串数组 |
+| `GET /xrefs?addr=...`、`POST /xrefs_batch` | 单个或批量 callers/callees |
 
-因此：
-- **该服务不支持多样本并发**。
-- 即便服务端使用锁保证一次只处理一个请求，也无法保证跨样本隔离（因为 analyzer 本身就是单实例）。
-- 上层必须保证同一时刻只驱动一个样本分析：当前由 `backend/worker/AnalysisWorker._analysis_lock` 强制。
+上传文件保存在 `data/uploads/<sha256>`，不得通过客户端文件名生成路径。未上传样本时需要 analyzer 的接口返回 `409`。批量反编译会跳过失败条目，调用方必须接受缺项。
 
----
+## MCP 服务
 
-## 4. HTTP API（ghidra_pipe 服务）
+`ghidra_mcp/main.py` 通过 `GHIDRA_PIPE_BASE_URL` 访问 Pipe，使用 FastMCP 在 `/mcp` 暴露：
 
-路由定义：`ghidra_pipe/main.py`
+- `decompile_function(target)`
+- `function_xrefs(target)`
 
-### 4.1 GET /health_check
-返回：`{"status": "ok"}`
+相关环境变量：`GHIDRA_MCP_HOST`、`GHIDRA_MCP_PORT`、`GHIDRA_MCP_TIMEOUT`、`GHIDRA_MCP_ALLOW_ORIGINS`、`FASTMCP_STATELESS_HTTP`。工具只读当前 analyzer，必须在上传和分析之后使用。
 
-### 4.2 POST /upload
-输入：multipart/form-data `file`
+## 本地运行与变更
 
-行为：
-- 将上传文件流式写入 `<repo_root>/data/uploads/`，最终文件名即其 sha256（temp 文件用 uuid 前缀，落盘时改名为 sha256）。
-- 切换全局 `analyzer` 到新文件。
+本地运行前需可用的 Ghidra 安装和 `GHIDRA_INSTALL_DIR`。依赖清单在 `requirements-ghidra.txt`。
 
-返回：`{"status": "ok"}`（刻意不返回服务器文件路径，避免路径泄露）。
+```bash
+export GHIDRA_INSTALL_DIR=/path/to/ghidra
+python module/ghidra_pipe/main.py
+python module/ghidra_mcp/main.py
+```
 
-### 4.3 GET /analyze
-行为：
-- 执行 Ghidra 自动分析（analyzeAll）。
-- 返回：`{"status": "done"}` 或 error。
-
-### 4.4 GET /metadata
-返回：`GhidraAnalyzer.get_info()` -> 包含 core 和 bin 信息的 JSON
-
-### 4.5 GET /functions
-返回：`GhidraAnalyzer.get_functions()` -> JSON 列表
-- 每个函数：`{name, offset, size, signature}`
-
-### 4.6 GET /strings
-返回：`GhidraAnalyzer.get_strings()` -> JSON 列表
-- 每个字符串：`{string, vaddr, section, type, length}`
-
-### 4.7 GET /exports
-返回：`GhidraAnalyzer.get_exports()` -> JSON 列表
-- 每个导出项固定为：`{name, offset}`
-
-### 4.8 GET /callgraph
-返回：`GhidraAnalyzer.get_global_call_graph()`
-- `{nodes: [{id, name, offset}, ...], edges: [{from, to}, ...]}`
-
-### 4.9 POST /decompile_batch
-输入：JSON 数组 `List[str]`
-- 每一项可以是函数名或地址（例如 `main`、`FUN_00001234`、`0x401000`）。
-
-输出：JSON 列表
-- `[{"address": "<name_or_addr>", "code": "<decompiled_text>"}, ...]`
-
-### 4.10 GET /xrefs
-输入：query 参数 `addr=<function_name_or_addr>`
-
-输出：
-- `{name, offset, callers, callees}`
-
-### 4.11 POST /xrefs_batch
-输入：JSON 数组 `List[str]`
-
-输出：
-- `[{name, offset, callers, callees}, ...]`
-
-重要语义：
-- 批量反编译逐个执行 DecompInterface.decompileFunction。
-- 某个函数反编译失败时会被 try/except 吞掉，该项 **不会出现在返回列表中**（"缺项语义"）。
-- 上游（agents）必须容忍并以"能拿到多少算多少"的策略继续。
-
----
-
-## 4.12 MCP API（ghidra_mcp 服务）
-
-### 4.12.1 Tool: decompile_function
-输入：`target`（函数名或地址）
-输出：`{address, code}`（来自 ghidra_pipe /decompile）
-
-### 4.12.2 Tool: function_xrefs
-输入：`target`（函数名或地址）
-输出：`{name, offset, callers, callees}`（来自 ghidra_pipe /xrefs）
-
-## 5. GhidraAnalyzer 封装约定
-
-实现：`ghidra_pipe/analyzer.py`
-
-- 使用 `pyghidra.open_program()` 打开二进制。
-- 使用 `flat_api.analyzeAll(program)` 执行分析。
-- 反编译通过 `DecompInterface` + `decompileFunction()` 实现。
-- 字符串通过遍历 Listing 的 DefinedData 提取。
-- 调用图通过 ReferenceManager 查找 CALL 类型引用构建。
-
----
-
-## 6. 部署与依赖
-
-- 运行方式：
-  - 本地：`python module/ghidra_pipe/main.py`（默认 8000）
-  - 本地 MCP：`python module/ghidra_mcp/main.py`（默认 9000）
-  - Docker：见 `docker/Dockerfile.ghidra` 与 `docker-compose.yml`
-- 依赖：
-  - `pyghidra` Python 包（需要 Ghidra 12+）
-  - `JPype1` 用于 Python-Java 桥接
-  - 容器/系统内的 Ghidra 安装（`GHIDRA_INSTALL_DIR` 环境变量）
-  - JDK/JRE（Ghidra 12 需要 JDK 21+）
-
----
-
-## 7. 扩展点与开发指引
-
-### 7.1 新增能力（新增路由/新增功能）
-建议流程：
-1. 在 `GhidraAnalyzer` 中新增一个方法
-2. 在 `ghidra_pipe/main.py` 中新增对应 FastAPI 路由
-3. 在 `agents/config.yaml` 同步新增 endpoints 映射
-4. 在 `agents/ghidra_client.py` 新增客户端方法
-5. 在 `agents/analysis_coordinator.py` 中接入并决定是否需要落库
-
-### 7.2 并发升级路线图
-若要支持多样本并发：
-- 需要将 ghidra_pipe 从"全局 analyzer"改为"每任务独立 analyzer"（会话 ID、或多进程/多容器池化）。
-- 同时需要重新设计 API：upload 返回 session_id，后续所有请求携带 session_id。
-- 考虑 Ghidra/JVM 内存占用较大，建议采用多容器池化方案。
-
----
-
-## 8. 与其他模块的契约（速查）
-
-- agents 通过 `GhidraClient` 调用本服务（base_url 由 `PTW_GHIDRA_BASE_URL` 或 config.yaml 指定）。
-- backend 通过 worker 单并发驱动 agents，从而间接使用本服务。
+新增 Pipe API 时，在 `GhidraAnalyzer` 实现业务逻辑、在 `main.py` 加路由、更新 `agents/config.yaml` 和客户端方法，并为异常、无 analyzer、批量缺项等响应语义添加测试。需要多样本并发时，应设计带 session ID 的隔离 API 或多容器池，而不是共享全局 analyzer。

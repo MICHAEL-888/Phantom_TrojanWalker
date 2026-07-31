@@ -119,11 +119,11 @@ export default function History() {
             <table className="w-full text-left border-collapse table-fixed">
               <thead>
                 <tr className="bg-slate-900/50 border-b border-slate-700 text-slate-300 text-sm uppercase tracking-wider">
-                  <th className="p-4 font-medium w-32">Status</th>
-                  <th className="p-4 font-medium w-1/3">Filename</th>
-                  <th className="p-4 font-medium w-1/3">SHA256</th>
-                  <th className="p-4 font-medium w-60">Date</th>
-                  <th className="p-4 font-medium w-32">Action</th>
+                  <th className="pl-4 pr-3 py-4 md:p-4 font-medium w-32">Status</th>
+                  <th className="px-3 py-4 md:p-4 font-medium w-auto md:w-1/3">Filename</th>
+                  <th className="hidden md:table-cell p-4 font-medium w-1/3">SHA256</th>
+                  <th className="hidden md:table-cell p-4 font-medium w-60">Date</th>
+                  <th className="px-3 py-4 md:p-4 font-medium w-28 md:w-32">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-700/50">
@@ -132,7 +132,7 @@ export default function History() {
                     key={task.task_id}
                     className="hover:bg-slate-700/30 transition-colors group"
                   >
-                    <td className="p-4">
+                    <td className="pl-4 pr-3 py-4 md:p-4 w-32">
                       <div
                         className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border ${getStatusBadgeClass(task.status)}`}
                       >
@@ -140,7 +140,7 @@ export default function History() {
                         <span className="ml-1.5 capitalize">{task.status}</span>
                       </div>
                     </td>
-                    <td className="p-4">
+                    <td className="px-3 py-4 md:p-4">
                       <div className="flex items-center text-slate-200 font-medium truncate">
                         <FileText className="w-4 h-4 mr-2 text-slate-400 flex-shrink-0" />
                         <span className="truncate" title={task.filename || 'Unknown'}>
@@ -148,15 +148,15 @@ export default function History() {
                         </span>
                       </div>
                     </td>
-                    <td className="p-4">
+                    <td className="hidden md:table-cell p-4">
                       <div className="text-slate-400 font-mono text-sm truncate" title={task.sha256}>
                         {task.sha256}
                       </div>
                     </td>
-                    <td className="p-4 text-slate-400 text-sm">
+                    <td className="hidden md:table-cell p-4 text-slate-400 text-sm">
                       {formatDate(task.created_at)}
                     </td>
-                    <td className="p-4 text-right">
+                    <td className="px-3 py-4 md:p-4 text-right">
                       <button
                         onClick={() => navigate(`/task/${task.task_id}`)}
                         className="inline-flex items-center px-3 py-1.5 bg-slate-700 hover:bg-cyan-600 text-white text-sm font-medium rounded transition-colors cursor-pointer"

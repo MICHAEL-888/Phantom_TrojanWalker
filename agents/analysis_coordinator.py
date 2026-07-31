@@ -11,6 +11,7 @@ from fastapi import UploadFile
 
 from ghidra_client import GhidraClient
 from agent_core import FunctionAnalysisAgent, MalwareAnalysisAgent
+from schemas import MalwareReport
 
 logger = logging.getLogger(__name__)
 
@@ -414,6 +415,25 @@ class AnalysisCoordinator:
         function_analysis_results, key_function_analyses = await self._step_function_analysis(
             decompiled_codes, callers_lookup, exported_exact, exported_normalized, exported_offsets, function_offsets,
         )
+
+        if not key_function_analyses:
+            logger.info(
+                "No preliminary ATT&CK matches found; skipping final malware review for file: %s",
+                filename,
+            )
+            return {
+                "metadata": metadata,
+                "malware_report": MalwareReport(
+                    threat_type="clean",
+                    risk_level="safe",
+                    malware_name="N/A",
+                    attack_chain="No malicious ATT&CK behavior was identified during preliminary analysis.",
+                    reason=(
+                        "Preliminary function analysis found no ATT&CK technique matches; "
+                        "final malware review was not required."
+                    ),
+                ).model_dump(),
+            }
 
         final_malware_report = await self._step_malware_report(key_function_analyses, metadata)
 
