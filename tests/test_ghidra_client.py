@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agents"))
 
-from exceptions import GhidraBackendError
+from exceptions import GhidraBackendError, GhidraConnectionError
 from ghidra_client import GhidraClient
 
 
@@ -58,3 +58,36 @@ async def test_check_health_fails_after_recovery_timeout():
         await client.check_health()
 
     client._request.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_check_health_waits_while_pipe_reports_restarting(monkeypatch):
+    client = _make_client()
+    client._request = AsyncMock(side_effect=[{"status": "restarting"}, {"status": "ok"}])
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    await client.check_health()
+
+    assert sleeps == [1.0]
+    assert client._request.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_upload_retries_after_pipe_disconnect():
+    client = _make_client()
+    client._request = AsyncMock(
+        side_effect=[
+            GhidraConnectionError("Server disconnected without sending a response."),
+            {"status": "ok"},
+            {"status": "ok"},
+        ]
+    )
+
+    await client.upload_file("sample.bin", b"sample", "application/octet-stream")
+
+    assert client._request.await_count == 3

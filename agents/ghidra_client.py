@@ -8,7 +8,7 @@ import logging
 import time
 from typing import Dict, Any, List, Optional
 from config_loader import AppConfig
-from exceptions import GhidraBackendError, GhidraTimeoutError
+from exceptions import GhidraBackendError, GhidraConnectionError, GhidraTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,9 @@ class GhidraClient:
                 ) from e
             except httpx.RequestError as e:
                 logger.error("Request error for %s: %s", url, e)
-                raise GhidraBackendError(f"Failed to connect to Ghidra backend: {e}") from e
+                raise GhidraConnectionError(
+                    f"Failed to connect to Ghidra backend: {e}"
+                ) from e
             except Exception as e:
                 logger.error("Unexpected error for %s: %s", url, e)
                 raise GhidraBackendError(f"Unexpected error: {e}") from e
@@ -140,9 +142,16 @@ class GhidraClient:
         ) from last_error
 
     async def upload_file(self, filename: str, content: bytes, content_type: str):
-        """Upload a binary file to the Ghidra backend."""
+        """Upload a binary, retrying once if Pipe exits during its restart window."""
         files = {"file": (filename, content, content_type)}
-        await self._request("POST", "upload", files=files, timeout=60.0)
+        try:
+            await self._request("POST", "upload", files=files, timeout=60.0)
+        except GhidraConnectionError as error:
+            # The previous task may have closed Pipe after its health check succeeded.
+            # Uploads are content-addressed and replacing the current analyzer is safe.
+            logger.warning("Ghidra disconnected during upload; waiting to retry: %s", error)
+            await self.check_health()
+            await self._request("POST", "upload", files=files, timeout=60.0)
 
     async def trigger_analysis(self):
         """Trigger analysis on the uploaded binary."""

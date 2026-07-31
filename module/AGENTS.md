@@ -15,7 +15,7 @@
 
 因此系统只能同时分析一个样本。该约束由 `backend/worker/worker.py` 的 `_analysis_lock` 维护，不能通过在客户端增加并发请求来规避。
 
-分析结束时 agents 会调用 `POST /close`。Compose 设置 `GHIDRA_RESTART_AFTER_CLOSE=1`，Pipe 会在释放资源后退出，以便容器以全新 JVM 重启；下一任务的 Ghidra client 会以有上限的指数退避等待 `/health_check` 恢复。修改该行为前须评估内存释放、健康检查和 worker 重试。
+分析结束时 agents 会调用 `POST /close`。Compose 设置 `GHIDRA_RESTART_AFTER_CLOSE=1`，Pipe 会先将 `/health_check` 标为 `restarting`，再在释放资源后退出，以便容器以全新 JVM 重启；下一任务的 Ghidra client 会以有上限的指数退避等待恢复。修改该行为前须评估内存释放、健康检查和 worker 重试。
 
 ## Ghidra Pipe
 

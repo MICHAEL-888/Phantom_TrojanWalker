@@ -6,6 +6,12 @@ class GhidraBackendError(TrojanWalkerError):
     """远程 Ghidra 后端服务不可达或通信失败"""
     pass
 
+
+class GhidraConnectionError(GhidraBackendError):
+    """远程 Ghidra 后端在请求完成前断开连接"""
+    pass
+
+
 class GhidraTimeoutError(GhidraBackendError):
     """远程 Ghidra 后端请求超时"""
 
