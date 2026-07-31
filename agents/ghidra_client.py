@@ -2,8 +2,10 @@
 GhidraClient: HTTP client for the Ghidra Pipe service.
 Replaces the previous RizinClient with identical interface.
 """
+import asyncio
 import httpx
 import logging
+import time
 from typing import Dict, Any, List, Optional
 from config_loader import AppConfig
 from exceptions import GhidraBackendError, GhidraTimeoutError
@@ -17,6 +19,10 @@ class GhidraClient:
     # NOTE: Use named constants for easier tuning and to avoid magic numbers.
     DEFAULT_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
     DEFAULT_RETRIES = 3
+    HEALTH_CHECK_TIMEOUT_SECONDS = 10.0
+    RECOVERY_TIMEOUT_SECONDS = 120.0
+    RECOVERY_INITIAL_DELAY_SECONDS = 1.0
+    RECOVERY_MAX_DELAY_SECONDS = 10.0
 
     def __init__(self, config: AppConfig):
         self.config = config
@@ -99,10 +105,39 @@ class GhidraClient:
             return response.text
 
     async def check_health(self):
-        """Check if the Ghidra backend is healthy."""
-        resp = await self._request("GET", "health_check", timeout=10.0)
-        if isinstance(resp, dict) and resp.get("status") != "ok":
-            raise GhidraBackendError("Ghidra backend reported unhealthy status")
+        """Wait for Ghidra to become healthy after a Pipe process restart."""
+        deadline = time.monotonic() + self.RECOVERY_TIMEOUT_SECONDS
+        delay = self.RECOVERY_INITIAL_DELAY_SECONDS
+        last_error = None
+
+        while True:
+            if last_error is not None and time.monotonic() >= deadline:
+                break
+            try:
+                resp = await self._request(
+                    "GET", "health_check", timeout=self.HEALTH_CHECK_TIMEOUT_SECONDS,
+                )
+                if isinstance(resp, dict) and resp.get("status") != "ok":
+                    raise GhidraBackendError("Ghidra backend reported unhealthy status")
+                return
+            except GhidraBackendError as error:
+                last_error = error
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+
+                sleep_seconds = min(delay, remaining)
+                logger.warning(
+                    "Ghidra backend is unavailable; retrying health check in %.1fs (%s)",
+                    sleep_seconds,
+                    error,
+                )
+                await asyncio.sleep(sleep_seconds)
+                delay = min(delay * 2, self.RECOVERY_MAX_DELAY_SECONDS)
+
+        raise GhidraBackendError(
+            f"Ghidra backend did not recover within {self.RECOVERY_TIMEOUT_SECONDS:.0f}s"
+        ) from last_error
 
     async def upload_file(self, filename: str, content: bytes, content_type: str):
         """Upload a binary file to the Ghidra backend."""

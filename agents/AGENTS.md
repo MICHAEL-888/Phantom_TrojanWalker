@@ -25,7 +25,7 @@
 
 `AnalysisCoordinator.analyze_content(filename, content, content_type)` 依次执行：
 
-1. Ghidra 健康检查、上传、自动分析。
+1. Ghidra 健康检查（Pipe 重启期间按上限 120 秒的指数退避等待恢复）、上传、自动分析。
 2. 拉取元数据、函数、导出表和字符串。
 3. 选择 `FUN_*`、常见入口点和导出函数，获取其交叉引用和批量反编译结果。
 4. 丢弃无调用者且非入口/非导出的候选函数，调用 `FunctionAnalysisAgent` 并发做结构化分析。
