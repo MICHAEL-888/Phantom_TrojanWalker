@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agents"))
 
 from analysis_coordinator import AnalysisCoordinator
+from exceptions import GhidraTimeoutError
 from schemas import MalwareReport
 
 
@@ -81,3 +82,35 @@ async def test_analysis_runs_final_review_when_screening_has_attack_match():
     assert result == {"metadata": metadata, "malware_report": {"risk_level": "high"}}
     coordinator._step_malware_report.assert_awaited_once_with(key_function_analyses, metadata)
     coordinator._step_close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_xrefs_timeout_recovers_pipe_before_analysis_task_finishes():
+    ghidra = AsyncMock()
+    coordinator = AnalysisCoordinator(ghidra, AsyncMock(), AsyncMock())
+    coordinator._step_health_check = AsyncMock()
+    coordinator._step_upload = AsyncMock()
+    coordinator._step_trigger_analysis = AsyncMock()
+    coordinator._step_metadata = AsyncMock(return_value={"bin": {"arch": "x86"}})
+    coordinator._step_functions_and_exports = AsyncMock(
+        return_value=([{"name": "FUN_001"}], set(), set(), set(), {})
+    )
+    coordinator._step_strings = AsyncMock(return_value=[])
+    timeout = GhidraTimeoutError("Ghidra request timed out: xrefs_batch", endpoint="xrefs_batch")
+    coordinator._step_xrefs = AsyncMock(side_effect=timeout)
+    coordinator._step_close = AsyncMock()
+    recovery_finished = False
+
+    async def recover_after_timeout(*, stop):
+        nonlocal recovery_finished
+        assert stop is True
+        recovery_finished = True
+
+    ghidra.recover_after_timeout.side_effect = recover_after_timeout
+
+    with pytest.raises(GhidraTimeoutError, match="xrefs_batch"):
+        await coordinator.analyze_content("complex.bin", b"sample")
+
+    assert recovery_finished is True
+    ghidra.recover_after_timeout.assert_awaited_once_with(stop=True)
+    coordinator._step_close.assert_not_awaited()

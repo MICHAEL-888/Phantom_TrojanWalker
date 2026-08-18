@@ -12,6 +12,7 @@ from fastapi import UploadFile
 from ghidra_client import GhidraClient
 from agent_core import FunctionAnalysisAgent, MalwareAnalysisAgent
 from schemas import MalwareReport
+from exceptions import GhidraTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -363,6 +364,21 @@ class AnalysisCoordinator:
             # Cleanup must not hide the failure that caused the pipeline to stop.
             logger.error("Failed to close Ghidra analyzer", exc_info=True)
 
+    async def _step_recover_after_timeout(self, error: GhidraTimeoutError) -> None:
+        """Recover Pipe before the worker can start another sample."""
+        logger.info(
+            "Ghidra request %s timed out; waiting for backend recovery before releasing the worker.",
+            error.endpoint or "unknown",
+        )
+        try:
+            # trigger_analysis already requests a stop itself.  Other requests
+            # (notably xrefs_batch) need the stop request here.
+            await self.ghidra.recover_after_timeout(stop=error.endpoint != "analyze")
+        except Exception:
+            # Preserve the original timeout as the task error, but keep the
+            # worker from racing the still-unhealthy backend where possible.
+            logger.error("Failed to recover Ghidra backend after timeout", exc_info=True)
+
     # ------------------------------------------------------------------
     # Public entry points
     # ------------------------------------------------------------------
@@ -375,11 +391,18 @@ class AnalysisCoordinator:
     async def analyze_content(
         self, filename: str, content: bytes, content_type: str = "application/octet-stream",
     ) -> Dict[str, Any]:
-        """Run analysis and always release the current Ghidra program."""
+        """Run analysis and release or recover the current Ghidra backend."""
+        timed_out: GhidraTimeoutError | None = None
         try:
             return await self._analyze_content(filename, content, content_type)
+        except GhidraTimeoutError as error:
+            timed_out = error
+            raise
         finally:
-            await self._step_close()
+            if timed_out is not None:
+                await self._step_recover_after_timeout(timed_out)
+            else:
+                await self._step_close()
 
     async def _analyze_content(
         self, filename: str, content: bytes, content_type: str = "application/octet-stream",

@@ -258,7 +258,14 @@ def close_analyzer():
 @app.post("/stop_analysis")
 def stop_analysis():
     """Force-stop current analysis by terminating ghidra_pipe process."""
+    global restart_pending
     logger.error("Received /stop_analysis request, scheduling forced process termination.")
+    # Signal the draining state before the delayed termination starts.  This
+    # prevents a recovery health check from observing a brief false "ok" and
+    # letting the next sample upload while the old process is still dying.
+    # Do not acquire analyzer_lock here: a timed-out synchronous endpoint may
+    # still hold it while the process is being force-terminated.
+    restart_pending = True
     threading.Thread(target=_force_terminate_process, daemon=True).start()
     return {"status": "accepted", "message": "Process termination scheduled"}
 

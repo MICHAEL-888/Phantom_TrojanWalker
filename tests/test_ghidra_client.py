@@ -91,3 +91,22 @@ async def test_upload_retries_after_pipe_disconnect():
     await client.upload_file("sample.bin", b"sample", "application/octet-stream")
 
     assert client._request.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_recover_after_timeout_stops_pipe_before_waiting_for_health():
+    client = _make_client()
+    events = []
+
+    async def stop_analysis():
+        events.append("stop")
+
+    async def check_health():
+        events.append("health")
+
+    client.stop_analysis = stop_analysis
+    client.check_health = check_health
+
+    await client.recover_after_timeout()
+
+    assert events == ["stop", "health"]

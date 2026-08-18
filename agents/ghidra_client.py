@@ -166,6 +166,23 @@ class GhidraClient:
                 logger.error("Failed to call stop_analysis after timeout: %s", stop_error)
             raise
 
+    async def recover_after_timeout(self, stop: bool = True) -> None:
+        """Stop a timed-out request and wait until Pipe is ready again.
+
+        A timed-out HTTP request does not cancel the synchronous work already
+        running in the Pipe process.  The process must be terminated before
+        the worker releases its single-analysis lock, otherwise the next
+        sample can inherit the previous sample's analyzer state.
+        """
+        if stop:
+            try:
+                await self.stop_analysis()
+            except Exception as stop_error:
+                # The process may already be exiting; health recovery below is
+                # still useful and provides the definitive readiness check.
+                logger.error("Failed to call stop_analysis after timeout: %s", stop_error)
+        await self.check_health()
+
     async def stop_analysis(self) -> Dict[str, Any]:
         """Force-stop the current analysis process in ghidra_pipe service."""
         res = await self._request("POST", "stop_analysis", timeout=5.0)
