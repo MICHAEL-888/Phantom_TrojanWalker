@@ -41,7 +41,7 @@
 
 批量反编译可能缺少失败项，上游代码必须继续处理可用结果。Ghidra 端是全局单 analyzer，跨样本串行由 backend worker 保证，不能从此模块绕过该限制。
 
-最终报告 agent 可从 `plugins.mcp.base_url` 加载 `decompile_function`、`function_xrefs` 工具。工具预算由 `MalwareAnalysisAgent.tool_budget` 控制。
+最终报告 agent 可从 `plugins.mcp.base_url` 加载 `decompile_function`、`function_xrefs` 工具。工具预算由 `MalwareAnalysisAgent.tool_budget` 控制。为恢复 deepagents 外置的大工具结果，MalwareAnalysisAgent 额外保留只读 `read_file`，其它内置文件工具仍关闭。
 
 新增或修改 Ghidra 能力时，必须同步：
 

@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.INFO)
 GHIDRA_PIPE_BASE_URL = os.getenv("GHIDRA_PIPE_BASE_URL", "http://localhost:8000").rstrip("/")
 MCP_HOST = os.getenv("GHIDRA_MCP_HOST", "0.0.0.0")
 MCP_PORT = int(os.getenv("GHIDRA_MCP_PORT", "9000"))
-REQUEST_TIMEOUT = float(os.getenv("GHIDRA_MCP_TIMEOUT", "60"))
+REQUEST_TIMEOUT = float(os.getenv("GHIDRA_MCP_TIMEOUT", "90"))
 
 # Allow local development origins by default; can be tightened via env var later
 ALLOW_ORIGINS = os.getenv("GHIDRA_MCP_ALLOW_ORIGINS", "*")

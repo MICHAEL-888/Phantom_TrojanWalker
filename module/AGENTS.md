@@ -55,7 +55,7 @@
 - `decompile_function(target)`
 - `function_xrefs(target)`
 
-相关环境变量：`GHIDRA_MCP_HOST`、`GHIDRA_MCP_PORT`、`GHIDRA_MCP_TIMEOUT`、`GHIDRA_MCP_ALLOW_ORIGINS`、`FASTMCP_STATELESS_HTTP`。工具只读当前 analyzer，必须在上传和分析之后使用。
+相关环境变量：`GHIDRA_MCP_HOST`、`GHIDRA_MCP_PORT`、`GHIDRA_MCP_TIMEOUT`（默认 90 秒）、`GHIDRA_MCP_ALLOW_ORIGINS`、`FASTMCP_STATELESS_HTTP`。工具只读当前 analyzer，必须在上传和分析之后使用。
 
 ## 本地运行与变更
 

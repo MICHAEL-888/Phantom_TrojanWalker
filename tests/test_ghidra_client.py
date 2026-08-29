@@ -110,3 +110,9 @@ async def test_recover_after_timeout_stops_pipe_before_waiting_for_health():
     await client.recover_after_timeout()
 
     assert events == ["stop", "health"]
+
+
+def test_timeout_constants_keep_pipe_fallback_window_open():
+    from mcp_loader import MCP_HTTP_TIMEOUT_SECONDS
+
+    assert MCP_HTTP_TIMEOUT_SECONDS == 90.0

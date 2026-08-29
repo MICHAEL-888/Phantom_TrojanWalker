@@ -9,6 +9,9 @@ from typing import Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
+MCP_HTTP_TIMEOUT_SECONDS = 90.0
+MCP_SSE_READ_TIMEOUT_SECONDS = 300.0
+
 
 async def load_mcp_tools(mcp_base_url: Optional[str]) -> List[Any]:
     """Load MCP tools from the configured ghidra_mcp service URL.
@@ -27,6 +30,8 @@ async def load_mcp_tools(mcp_base_url: Optional[str]) -> List[Any]:
             "ghidra": {
                 "transport": "http",
                 "url": mcp_base_url,
+                "timeout": MCP_HTTP_TIMEOUT_SECONDS,
+                "sse_read_timeout": MCP_SSE_READ_TIMEOUT_SECONDS,
             }
         }
     )

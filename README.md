@@ -159,6 +159,7 @@ export PTW_MALWAREANALYSISAGENT_API_KEY="sk-..."
 
 - **FunctionAnalysisAgent**：可用小模型（逐函数分析，并发调用）。作者用过 `mistral-medium` / `LongCat-Flash-Lite`。避免用过小的模型（如 4B），知识量不足以做 ATT&CK 矩阵匹配。
 - **MalwareAnalysisAgent**：建议用先进模型（涉及工具调用 + 推理）。作者用 `LongCat-Flash-Thinking-2601`（支持边思考边调工具）。该 Agent 通过 `create_deep_agent` 创建，内置 `SummarizationMiddleware` 自动压缩上下文。
+- MalwareAnalysisAgent 保留只读 `read_file`，用于按 `offset`/`limit` 分段读取 deepagents 外置的大型 MCP 工具结果；其它内置文件工具保持关闭。
 
 ## 🚀 快速启动
 
@@ -256,7 +257,7 @@ npm run dev
 |------|------|
 | `GHIDRA_INSTALL_DIR` | 本地 Ghidra 安装目录（Docker 内置为 `/ghidra`） |
 | `GHIDRA_MCP_ALLOW_ORIGINS` | MCP 服务 CORS 来源（默认 `*`） |
-| `GHIDRA_MCP_TIMEOUT` | MCP 请求超时秒数（默认 `60`） |
+| `GHIDRA_MCP_TIMEOUT` | MCP 请求超时秒数（默认 `90`；Ghidra 单函数内部超时仍为 60 秒） |
 
 ### Langfuse 可观测
 

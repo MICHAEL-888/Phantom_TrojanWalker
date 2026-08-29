@@ -14,9 +14,10 @@ hand-rolled SummarizationMiddleware + ToolBudgetMiddleware to deepagent.
 - Both FunctionAnalysisAgent and MalwareAnalysisAgent now use create_deep_agent
   with response_format=<PydanticModel>. The old ChatOpenAI.with_structured_output
   + SystemMessage/HumanMessage path in FunctionAnalysisAgent is retired, so
-  langchain_core.messages is no longer imported here. A shared HarnessProfile
-  registration on BaseAgent strips deepagent's built-in tools/prompts for both
-  agents, keeping their model-facing surface identical.
+   langchain_core.messages is used only for the local recovery-tool guard. A
+   shared HarnessProfile registration on BaseAgent strips deepagent's built-in
+   tools/prompts for both agents, while MalwareAnalysisAgent keeps read_file for
+   large-result recovery.
 """
 import asyncio
 import json
@@ -24,6 +25,8 @@ import logging
 import random
 from typing import Any, Dict, List, Optional, Tuple
 
+from langchain.agents.middleware.types import AgentMiddleware
+from langchain_core.messages import ToolMessage
 from pydantic import BaseModel, ValidationError
 
 from config_loader import AppConfig
@@ -59,6 +62,49 @@ class _RecursionLimitWithState(Exception):
         super().__init__(str(cause))
         self.cause = cause
         self.state = state
+
+
+class _AgentRunWithState(Exception):
+    """Carry the latest graph state through a retryable agent failure."""
+
+    def __init__(self, cause: Exception, state: Dict[str, Any]):
+        super().__init__(str(cause))
+        self.cause = cause
+        self.state = state
+
+
+class _DisableReadFileMiddleware(AgentMiddleware):
+    """Hide the recovery tool during the no-tool final review."""
+
+    @staticmethod
+    def _without_read_file(tools: List[Any]) -> List[Any]:
+        return [tool for tool in tools if getattr(tool, "name", None) != "read_file"]
+
+    def wrap_model_call(self, request: Any, handler: Any) -> Any:
+        return handler(request.override(tools=self._without_read_file(request.tools)))
+
+    async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+        return await handler(request.override(tools=self._without_read_file(request.tools)))
+
+    def wrap_tool_call(self, request: Any, handler: Any) -> Any:
+        if request.tool_call.get("name") == "read_file":
+            return ToolMessage(
+                content="Error: read_file is not available during final review.",
+                name="read_file",
+                tool_call_id=request.tool_call.get("id") or "",
+                status="error",
+            )
+        return handler(request)
+
+    async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
+        if request.tool_call.get("name") == "read_file":
+            return ToolMessage(
+                content="Error: read_file is not available during final review.",
+                name="read_file",
+                tool_call_id=request.tool_call.get("id") or "",
+                status="error",
+            )
+        return await handler(request)
 
 
 class BaseAgent:
@@ -143,6 +189,8 @@ class BaseAgent:
 
     def _is_retryable_exception(self, exc: Exception) -> bool:
         """Return whether an exception is likely to be transient."""
+        if isinstance(exc, (_AgentRunWithState, _RecursionLimitWithState)):
+            exc = exc.cause
         status_code = getattr(exc, "status_code", None)
         if status_code is None:
             response = getattr(exc, "response", None)
@@ -188,11 +236,10 @@ class BaseAgent:
         ``_registered_profile_keys`` set, so constructing FAA after MAA (or
         vice versa) does not re-register (and re-log) the same profile.
 
-        Registered under both ``openai:<model_name>`` and the bare ``openai``
-        provider key so the profile resolves whether
-        ``_harness_profile_for_model`` tries the combined ``provider:identifier``
-        lookup first or falls back to the provider-only lookup. ChatOpenAI
-        reports ``ls_provider="openai"``.
+        Registered under both the model-specific and bare ``openai`` keys. The
+        bare profile is needed because the agents pass an initialized
+        ChatOpenAI object, while the FunctionAnalysisAgent applies an extra
+        local middleware to hide the recovery tool it does not need.
         """
         from deepagents import (
             GeneralPurposeSubagentProfile,
@@ -201,6 +248,12 @@ class BaseAgent:
         )
 
         model_name = self.agent_config.llm.model_name
+        excluded_tools = {
+            "write_todos",
+            "ls", "write_file", "edit_file", "delete",
+            "glob", "grep", "execute",
+        }
+
         profile = HarnessProfile(
             # Refactor note: deepagents >=0.6 removed SystemPromptConfig. The
             # new create_deep_agent always appends BASE_AGENT_PROMPT to
@@ -209,11 +262,7 @@ class BaseAgent:
             # string, so only our domain prompt reaches the model (equivalent
             # to the old SystemPromptConfig(base=None)).
             base_system_prompt="",
-            excluded_tools=frozenset({
-                "write_todos",
-                "ls", "read_file", "write_file", "edit_file", "delete",
-                "glob", "grep", "execute",
-            }),
+            excluded_tools=frozenset(excluded_tools),
             excluded_middleware=frozenset(),
             general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
         )
@@ -270,6 +319,7 @@ class FunctionAnalysisAgent(BaseAgent):
             system_prompt=self.agent_config.system_prompt,
             response_format=FunctionAnalysisResult,
             subagents=[],
+            middleware=[_DisableReadFileMiddleware()],
         )
 
     async def analyze_decompiled_batch(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -408,34 +458,41 @@ class MalwareAnalysisAgent(BaseAgent):
         base_url = getattr(mcp_cfg, "base_url", None)
         return str(base_url).rstrip("/") if base_url else None
 
-    def _resolve_tool_budget(self) -> Tuple[bool, int, int]:
-        """Resolve (enabled, max_tool_calls, max_agent_steps) from config."""
+    def _resolve_tool_budget(self) -> Tuple[bool, int, int, int]:
+        """Resolve tool-call, graph-step, and result-size limits from config."""
         budget_cfg = getattr(self.agent_config, "tool_budget", None)
         enabled = True
         max_tool_calls = 12
         max_agent_steps = 30
+        max_tool_result_chars = 120000
 
         if budget_cfg is not None:
-            if isinstance(budget_cfg.enabled, bool):
-                enabled = budget_cfg.enabled
-            if isinstance(budget_cfg.max_tool_calls, int) and budget_cfg.max_tool_calls > 0:
-                max_tool_calls = budget_cfg.max_tool_calls
-            if isinstance(budget_cfg.max_agent_steps, int) and budget_cfg.max_agent_steps > 0:
-                max_agent_steps = budget_cfg.max_agent_steps
+            enabled_cfg = getattr(budget_cfg, "enabled", None)
+            max_tool_calls_cfg = getattr(budget_cfg, "max_tool_calls", None)
+            max_agent_steps_cfg = getattr(budget_cfg, "max_agent_steps", None)
+            max_tool_result_chars_cfg = getattr(budget_cfg, "max_tool_result_chars", None)
+            if isinstance(enabled_cfg, bool):
+                enabled = enabled_cfg
+            if isinstance(max_tool_calls_cfg, int) and max_tool_calls_cfg > 0:
+                max_tool_calls = max_tool_calls_cfg
+            if isinstance(max_agent_steps_cfg, int) and max_agent_steps_cfg > 0:
+                max_agent_steps = max_agent_steps_cfg
+            if isinstance(max_tool_result_chars_cfg, int) and max_tool_result_chars_cfg > 0:
+                max_tool_result_chars = max_tool_result_chars_cfg
 
-        return enabled, max_tool_calls, max_agent_steps
+        return enabled, max_tool_calls, max_agent_steps, max_tool_result_chars
 
     async def _stream_agent_with_state(
         self,
         agent: Any,
-        messages: List[Dict[str, Any]],
+        input_state: Dict[str, Any],
         invoke_config: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Run an agent while retaining the latest state for emergency review."""
         latest_state: Dict[str, Any] = {}
         try:
             async for state in agent.astream(
-                {"messages": messages},
+                input_state,
                 config=invoke_config,
                 stream_mode="values",
             ):
@@ -444,18 +501,32 @@ class MalwareAnalysisAgent(BaseAgent):
         except Exception as exc:
             if self._is_recursion_limit_error(exc):
                 raise _RecursionLimitWithState(exc, latest_state) from exc
-            raise
+            raise _AgentRunWithState(exc, latest_state) from exc
         return latest_state
 
     def _build_emergency_agent(self) -> Any:
         from deepagents import create_deep_agent
+        from deepagents.middleware.filesystem import FilesystemMiddleware
 
+        kwargs: Dict[str, Any] = {
+            "model": self._llm,
+            "tools": [],
+            "system_prompt": self.agent_config.system_prompt,
+            "response_format": MalwareReport,
+            "subagents": [],
+            "middleware": [
+                FilesystemMiddleware(
+                    backend=getattr(self, "_backend", None),
+                    # 0.7.x requires read_file in an explicit filesystem allowlist.
+                    tools=["read_file"],
+                ),
+                _DisableReadFileMiddleware(),
+            ],
+        }
+        if getattr(self, "_backend", None) is not None:
+            kwargs["backend"] = self._backend
         return create_deep_agent(
-            model=self._llm,
-            tools=[],
-            system_prompt=self.agent_config.system_prompt,
-            response_format=MalwareReport,
-            subagents=[],
+            **kwargs,
         )
 
     async def _emergency_final_review(
@@ -469,6 +540,9 @@ class MalwareAnalysisAgent(BaseAgent):
         captured_messages = interrupted_state.get("messages") if isinstance(interrupted_state, dict) else None
         emergency_messages = list(captured_messages or original_messages)
         emergency_messages.append({"role": "user", "content": _EMERGENCY_FINAL_REVIEW_REQUEST})
+        emergency_input: Dict[str, Any] = {"messages": emergency_messages}
+        if isinstance(interrupted_state, dict) and isinstance(interrupted_state.get("files"), dict):
+            emergency_input["files"] = interrupted_state["files"]
         emergency_config: Dict[str, Any] = {"recursion_limit": 8}
         base_config = self._invoke_config("MalwareAnalysisAgent.emergency_final_review")
         if base_config:
@@ -483,7 +557,7 @@ class MalwareAnalysisAgent(BaseAgent):
         )
         try:
             result = await emergency_agent.ainvoke(
-                {"messages": emergency_messages},
+                emergency_input,
                 config=emergency_config,
             )
         except Exception as exc:
@@ -507,13 +581,47 @@ class MalwareAnalysisAgent(BaseAgent):
         self._packet_log("malware_agent.emergency_response", {"structured": structured})
         return structured
 
+    def _build_filesystem_middleware(
+        self,
+        backend: Any,
+        max_tool_result_chars: int,
+        *,
+        allow_read_file: bool,
+    ) -> Any:
+        """Expose only paginated result recovery for the malware agent."""
+        from deepagents.middleware.filesystem import FilesystemMiddleware
+
+        # deepagents uses an approximately four-character-per-token limit.
+        tool_token_limit = max(1, max_tool_result_chars // 4)
+        return FilesystemMiddleware(
+            backend=backend,
+            tools=["read_file"] if allow_read_file else [],
+            tool_token_limit_before_evict=tool_token_limit,
+        )
+
+    @staticmethod
+    def _resume_state(state: Dict[str, Any]) -> Dict[str, Any]:
+        """Keep messages, files, and summarization state across a retry."""
+        keys = {
+            "messages",
+            "files",
+            "_summarization_event",
+            "_summarization_session_id",
+        }
+        return {key: state[key] for key in keys if key in state}
+
     async def analyze(self, analysis_results: list, metadata: dict) -> dict:
         """Generate the final malware report using MCP tools for verification."""
         context = {
             "metadata": metadata,
             "function_analyses": analysis_results,
         }
-        tool_enabled, max_tool_calls, max_agent_steps = self._resolve_tool_budget()
+        (
+            tool_enabled,
+            max_tool_calls,
+            max_agent_steps,
+            max_tool_result_chars,
+        ) = self._resolve_tool_budget()
 
         tools: List[Any] = []
         if tool_enabled and self.mcp_base_url:
@@ -533,9 +641,24 @@ class MalwareAnalysisAgent(BaseAgent):
         # subagents=[] + the registered profile's GeneralPurposeSubagentProfile
         # (enabled=False) ensures no auto-added GP subagent and no `task` tool.
         from deepagents import create_deep_agent
+        from deepagents.backends import StateBackend
         from langchain.agents.middleware import ToolCallLimitMiddleware
 
+        backend = StateBackend()
+        self._backend = backend
         middleware = []
+        if tools:
+            middleware.append(
+                self._build_filesystem_middleware(
+                    backend,
+                    max_tool_result_chars,
+                    allow_read_file=True,
+                ),
+            )
+        else:
+            # deepagents 0.7 rejects an empty FilesystemMiddleware allowlist.
+            # No MCP tools means there is no large-result recovery path to expose.
+            middleware.append(_DisableReadFileMiddleware())
         if tools:
             middleware.append(
                 ToolCallLimitMiddleware(
@@ -550,10 +673,12 @@ class MalwareAnalysisAgent(BaseAgent):
             system_prompt=self.agent_config.system_prompt,
             response_format=MalwareReport,
             subagents=[],
+            backend=backend,
             middleware=middleware,
         )
 
         messages = [{"role": "user", "content": json.dumps(context, ensure_ascii=False, indent=2)}]
+        run_input: Dict[str, Any] = {"messages": messages}
 
         invoke_config: Dict[str, Any] = {"recursion_limit": max_agent_steps}
         base_config = self._invoke_config("MalwareAnalysisAgent.analyze")
@@ -574,7 +699,7 @@ class MalwareAnalysisAgent(BaseAgent):
             )
             try:
                 result = await self._stream_agent_with_state(
-                    agent, messages, invoke_config,
+                    agent, run_input, invoke_config,
                 )
             except Exception as exc:
                 last_content = str(exc)
@@ -599,6 +724,11 @@ class MalwareAnalysisAgent(BaseAgent):
                     )
                 if not self._is_retryable_exception(exc):
                     break
+                failed_state = getattr(exc, "state", None)
+                if isinstance(failed_state, dict) and failed_state.get("messages"):
+                    # Keep tool calls/results and StateBackend files produced before
+                    # a transient failure instead of restarting from the initial prompt.
+                    run_input = self._resume_state(failed_state)
                 await self._wait_before_retry(attempt)
                 continue
 
