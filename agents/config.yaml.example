@@ -60,5 +60,7 @@ MalwareAnalysisAgent:
   tool_budget:
     enabled: true
     max_tool_calls: 60
+    # Complex investigations may need a higher limit. If it is exhausted,
+    # the agent automatically performs a no-tool evidence-based final review.
     max_agent_steps: 100
     max_tool_result_chars: 120000

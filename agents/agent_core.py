@@ -42,6 +42,25 @@ from mcp_loader import load_mcp_tools
 logger = logging.getLogger(__name__)
 
 
+_EMERGENCY_FINAL_REVIEW_REQUEST = (
+    "立即收敛分析：此前的调查已达到 LangGraph 递归轮次上限并被中断。"
+    "现在不得调用任何工具，也不得继续追踪函数或交叉引用；请仅基于截至上一条消息"
+    "已经获得的初筛证据、元数据和工具返回，立即提交一次完整的 MalwareReport。"
+    "只陈述证据直接支持的结论，不得补猜未验证的函数、调用链或 IOC。"
+    "证据缺口必须在 attack_chain 或 reason 中明确说明调查因递归轮次耗尽而中断。"
+    "所有字段必须在这一次结构化报告中给出，提交后立即结束响应。"
+)
+
+
+class _RecursionLimitWithState(Exception):
+    """Carry the last streamed graph state out of an exhausted agent run."""
+
+    def __init__(self, cause: Exception, state: Dict[str, Any]):
+        super().__init__(str(cause))
+        self.cause = cause
+        self.state = state
+
+
 class BaseAgent:
     """Shared base: config DI, retry resolution, truncation, debug logging,
     deepagent HarnessProfile registration.
@@ -86,6 +105,22 @@ class BaseAgent:
         if not self._packet_logger:
             return
         self._packet_logger.info("[%s] %s", phase, to_pretty_json(payload))
+
+    def _is_recursion_limit_error(self, exc: Exception) -> bool:
+        """Identify LangGraph recursion exhaustion without importing it eagerly."""
+        if isinstance(exc, _RecursionLimitWithState):
+            return True
+
+        try:
+            from langgraph.errors import GraphRecursionError
+        except ImportError:
+            GraphRecursionError = ()
+
+        if GraphRecursionError and isinstance(exc, GraphRecursionError):
+            return True
+
+        message = str(exc).lower()
+        return "recursion limit" in message or "graph_recursion_limit" in message
 
     def _truncate_code_for_context(self, code: str) -> str:
         max_input_tokens = getattr(self.agent_config.llm, "max_input_tokens", None)
@@ -365,11 +400,6 @@ class MalwareAnalysisAgent(BaseAgent):
             self.agent_config,
             force_tool_choice_auto=True,
         )
-        self._summary_llm = create_llm(
-            "MalwareAnalysisAgentSummary",
-            self.agent_config,
-            force_tool_choice_auto=True,
-        )
         self.mcp_base_url = self._resolve_mcp_base_url()
         self._register_analysis_profile()
 
@@ -394,6 +424,88 @@ class MalwareAnalysisAgent(BaseAgent):
                 max_agent_steps = budget_cfg.max_agent_steps
 
         return enabled, max_tool_calls, max_agent_steps
+
+    async def _stream_agent_with_state(
+        self,
+        agent: Any,
+        messages: List[Dict[str, Any]],
+        invoke_config: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Run an agent while retaining the latest state for emergency review."""
+        latest_state: Dict[str, Any] = {}
+        try:
+            async for state in agent.astream(
+                {"messages": messages},
+                config=invoke_config,
+                stream_mode="values",
+            ):
+                if isinstance(state, dict):
+                    latest_state = state
+        except Exception as exc:
+            if self._is_recursion_limit_error(exc):
+                raise _RecursionLimitWithState(exc, latest_state) from exc
+            raise
+        return latest_state
+
+    def _build_emergency_agent(self) -> Any:
+        from deepagents import create_deep_agent
+
+        return create_deep_agent(
+            model=self._llm,
+            tools=[],
+            system_prompt=self.agent_config.system_prompt,
+            response_format=MalwareReport,
+            subagents=[],
+        )
+
+    async def _emergency_final_review(
+        self,
+        original_messages: List[Dict[str, Any]],
+        interrupted_state: Dict[str, Any],
+        original_error: Exception,
+    ) -> Dict[str, Any]:
+        """Append a finalization request to the interrupted conversation."""
+        emergency_agent = self._build_emergency_agent()
+        captured_messages = interrupted_state.get("messages") if isinstance(interrupted_state, dict) else None
+        emergency_messages = list(captured_messages or original_messages)
+        emergency_messages.append({"role": "user", "content": _EMERGENCY_FINAL_REVIEW_REQUEST})
+        emergency_config: Dict[str, Any] = {"recursion_limit": 8}
+        base_config = self._invoke_config("MalwareAnalysisAgent.emergency_final_review")
+        if base_config:
+            emergency_config.update(base_config)
+
+        self._packet_log(
+            "malware_agent.emergency_request",
+            {
+                "original_error": str(original_error),
+                "message_count": len(emergency_messages),
+            },
+        )
+        try:
+            result = await emergency_agent.ainvoke(
+                {"messages": emergency_messages},
+                config=emergency_config,
+            )
+        except Exception as exc:
+            raise LLMResponseError(
+                "MalwareAnalysisAgent recursion limit reached and emergency final review failed: "
+                f"{exc}",
+                raw_response=str(exc),
+            ) from exc
+
+        structured_value = result.get("structured_response") if isinstance(result, dict) else None
+        structured, validation_error = self._validated_structured_response(
+            structured_value, MalwareReport,
+        )
+        if structured is None:
+            raise LLMResponseError(
+                "MalwareAnalysisAgent recursion limit reached; emergency final review returned "
+                f"an invalid structured response: {validation_error}",
+                raw_response=str(result),
+            )
+
+        self._packet_log("malware_agent.emergency_response", {"structured": structured})
+        return structured
 
     async def analyze(self, analysis_results: list, metadata: dict) -> dict:
         """Generate the final malware report using MCP tools for verification."""
@@ -461,7 +573,9 @@ class MalwareAnalysisAgent(BaseAgent):
                 },
             )
             try:
-                result = await agent.ainvoke({"messages": messages}, config=invoke_config)
+                result = await self._stream_agent_with_state(
+                    agent, messages, invoke_config,
+                )
             except Exception as exc:
                 last_content = str(exc)
                 last_error = str(exc)
@@ -469,6 +583,20 @@ class MalwareAnalysisAgent(BaseAgent):
                     "MalwareAnalysisAgent call failed (attempt %d/%d): %s",
                     attempt, self._max_attempts, exc,
                 )
+                if self._is_recursion_limit_error(exc):
+                    logger.warning(
+                        "MalwareAnalysisAgent reached recursion limit; requesting immediate "
+                        "evidence-based final review.",
+                    )
+                    return await self._emergency_final_review(
+                        original_messages=messages,
+                        interrupted_state=(
+                            getattr(exc, "state", None)
+                            or getattr(getattr(exc, "cause", None), "state", None)
+                            or {}
+                        ),
+                        original_error=exc,
+                    )
                 if not self._is_retryable_exception(exc):
                     break
                 await self._wait_before_retry(attempt)
